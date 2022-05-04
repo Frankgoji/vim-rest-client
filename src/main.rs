@@ -62,6 +62,7 @@ use std::fs;
 use std::io::{self, BufRead};
 use std::process::Command;
 
+use base64::encode;
 use jq_rs;
 use openssh::SessionBuilder;
 use regex::{Regex, Captures};
@@ -69,6 +70,7 @@ use serde_json::{self, Value, json};
 use tokio::runtime::Runtime;
 
 // TODO: perhaps configurable location by ENV variable
+// TODO: or maybe the env should be based on the file name, like .file.rest.json
 const ENV_FILE: &str = ".env.json";
 
 // SSH config vars
@@ -127,6 +129,7 @@ impl Request {
         let method = self.method.to_string();
         let url = parse_selectors(&self.url, env)?;
         let mut header_err: Option<String> = None;
+        let basic_auth_re = Regex::new(r"^(Authorization:\s+Basic\s+)([^:]+:[^:]+)$").unwrap();
         let headers = self.headers.iter().map(|header| {
             parse_selectors(header, env)
                 .map_or_else(
@@ -134,7 +137,7 @@ impl Request {
                         header_err = Some(e.to_string());
                         String::from("ERR")
                     },
-                    |replaced| replaced
+                    |replaced| handle_basic_auth(replaced, &basic_auth_re)
                 )
         }).collect::<Vec<String>>();
         if let Some(e) = &header_err {
@@ -190,6 +193,15 @@ impl Request {
         }
         Ok(ret_enum.get_return())
     }
+}
+
+/// Given a header string, if it is for basic auth then automatically convert
+/// the user:pass string to base64, as appropriate. Returns the original string
+/// if not.
+fn handle_basic_auth(header: String, basic_auth_re: &Regex) -> String {
+    basic_auth_re.replace(&header, |caps: &Captures| {
+        format!("{}{}", &caps[1], encode(&caps[2].as_bytes()))
+    }).to_string()
 }
 
 fn call_curl(args: &Vec<String>, env: &mut Value) -> Result<String, Box<dyn Error>> {

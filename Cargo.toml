@@ -11,3 +11,4 @@ jq-rs = {version = "0.4.1", features = ["bundled"]}
 regex = "1"
 openssh = {version = "0.9.0", features = ["native-mux"]}
 tokio = {version = "1.18.1", features = ["rt-multi-thread"]}
+base64 = "0.13.0"
