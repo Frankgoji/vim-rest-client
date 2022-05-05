@@ -344,13 +344,17 @@ fn parse_input(input: &mut impl BufRead) -> String {
                     Some(())
                 });
             // else skip comment
+        } else if !request_started && line.is_empty() {
+            // line breaks should be ignored, but appear in output
+            output.push('\n');
+            continue;
         } else if !request_started {
             // parse method and URL
             line.split_once(' ')
                 .map_or_else(
                     || {
                         error = true;
-                        output.push_str(&format!("Could not parse line: {}", line));
+                        output.push_str(&format!("Could not parse line: {}\n", line));
                         ()
                     },
                     |(m, url_str)| {
@@ -360,16 +364,16 @@ fn parse_input(input: &mut impl BufRead) -> String {
                     }
                 );
             request_started = true;
-        } else if !request_body_started && line != "" {
+        } else if !request_body_started && !line.is_empty() {
             headers.push(String::from(line));
-        } else if !request_body_started && line == "" {
+        } else if !request_body_started && line.is_empty() {
             request_body_started = true
         } else if request_body_started {
             request_body.push_str(&line);
         }
     }
 
-    if request_started {
+    if request_started && !error {
         let req = Request {
             method,
             url,
