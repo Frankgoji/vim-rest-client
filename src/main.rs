@@ -78,6 +78,7 @@ const SSH_TO: &str = "sshTo";
 const SSH_CONFIG: &str = "sshConfig";
 const SSH_KEY: &str = "sshKey";
 
+#[derive(Clone)]
 enum Method {
     Get,
     Post,
@@ -250,6 +251,110 @@ async fn ssh_curl(args: &Vec<String>, env: &mut Value) -> Result<String, Box<dyn
     Ok(ret)
 }
 
+/// Variables related to executing the content of a single fold
+struct FoldEnv {
+    ret: String,                // returned input
+    output: String,             // returned executed output
+    title: String,              // title of fold
+    end_marker: String,         // end of fold, in case there is a comment added
+    error: bool,                // if error occurred during execution
+    first_line: bool,           // if the first line has occurred yet
+    old_output_started: bool,   // if the output from previous execution was reached
+    compiled: bool,             // if this FoldEnv has compiled the return
+
+    // request related vars
+    request_started: bool,      // if the fold has started defining a request
+    request_body_started: bool, // if the fold has started the request body
+    response_variable: String,  // variable to store the response
+    made_request: bool,         // if the request was made
+    method: Method,             // request method
+    url: String,                // request url
+    headers: Vec<String>,       // request headers
+    request_body: String,       // request body
+}
+
+impl FoldEnv {
+    fn new() -> FoldEnv {
+        FoldEnv {
+            ret: String::new(),
+            output: String::new(),
+            title: String::new(),
+            end_marker: String::new(),
+            error: false,
+            first_line: true,
+            old_output_started: false,
+            compiled: false,
+
+            request_started: false,
+            request_body_started: false,
+            response_variable: String::new(),
+            made_request: false,
+            method: Method::Get,
+            url: String::new(),
+            headers: Vec::new(),
+            request_body: String::new(),
+        }
+    }
+
+    /// Collects the total string to return, including input and output
+    fn compile_return(&mut self) -> String {
+        if !self.compiled {
+            self.compiled = true;
+            if !self.output.is_empty() && self.output.chars().last().unwrap() != '\n' {
+                self.output.push('\n');
+            }
+            if self.end_marker.is_empty() {
+                self.output.push_str("###}");
+            } else {
+                self.output.push_str(&self.end_marker);
+            }
+            self.ret.push_str(&format!("########## {}{}\n",
+                self.title,
+                if self.error {"ERROR"} else {"RESULT"}));
+            self.ret.push_str(&self.output);
+            self.ret.clone()
+        } else {
+            String::new()
+        }
+    }
+
+    /// Builds and makes request if appropriate
+    fn make_request(&mut self, env: &mut Value) {
+        if self.request_started && !self.error {
+            let method = self.method.clone();
+            let url = self.url.clone();
+            let headers = self.headers.clone();
+            let req = Request {
+                method,
+                url,
+                headers,
+                data: if self.request_body_started {
+                    Some(self.request_body.clone())
+                } else {
+                    None
+                },
+            };
+            self.made_request = true;
+            req.make_request(env)
+                .and_then(|(response, val)| {
+                    if !self.response_variable.is_empty() {
+                        let res = set_var(&self.response_variable, &val, env);
+                        if let Err(_) = res {
+                            return res;
+                        }
+                    }
+                    self.output.push_str(&response);
+                    Ok(())
+                })
+                .or_else(|err| -> Result<(), ()>{
+                    self.error = true;
+                    self.output.push_str(&format!("{}\n", err.to_string()));
+                    Ok(())
+                }).unwrap();
+        }
+    }
+}
+
 /// Parse input lines that either define a variable or make a request
 /// Must return the input lines, as well as appropriate output
 /// Each block can have some variable definitions, but they must be before the
@@ -260,20 +365,9 @@ fn parse_input(input: &mut impl BufRead) -> String {
         .and_then(|env_string| serde_json::from_str(&env_string)
               .or_else(|e| Err(io_error(&e.to_string()))))
         .map_or_else(|_| json!({}), |val| val);
+    let mut fold_env = FoldEnv::new();
     let mut ret = String::new();
-    let mut output = String::new();
-    let mut title = String::new();
-    let mut end_marker = String::new();
-    let mut error = false;
-    let mut first_line = true;
-
-    let mut request_started = false;
-    let mut request_body_started = false;
-    let mut response_variable = String::new();
-    let mut method = Method::Get;
-    let mut url = String::new();
-    let mut headers: Vec<String> = Vec::new();
-    let mut request_body = String::new();
+    let mut fold_started = true;
 
     let resp_var_re = Regex::new(r"^#\s*@name\s*([^ ]+)").unwrap();
     let start_fold_re = Regex::new(r"^(###\{\s*(.*))$").unwrap();
@@ -288,40 +382,61 @@ fn parse_input(input: &mut impl BufRead) -> String {
             },
             Ok(_) => (),
             Err(e) => {
-                error = true;
-                output.push_str(&e.to_string());
+                fold_env.error = true;
+                fold_env.output.push_str(&e.to_string());
             },
         };
-        if first_line {
-            first_line = false;
+        if fold_env.first_line || !fold_started {
             if let Some(caps) = start_fold_re.captures(&line) {
+                if !fold_started {
+                    // previous endmarker doesn't end with newline
+                    ret.push('\n');
+                    fold_started = true;
+                    fold_env = FoldEnv::new();
+                }
                 if let Some(res) = caps.get(2) {
                     let no_exec = executed_re.replace(res.as_str(), "");
                     if !no_exec.to_string().is_empty() {
-                        title = format!("{} ", no_exec.to_string());
+                        fold_env.title = format!("{} ", no_exec.to_string());
                     }
                 }
                 if let Some(res) = caps.get(1) {
                     let no_exec = executed_re.replace(res.as_str(), "");
-                    ret.push_str(&format!("{} executed\n", no_exec.to_string()));
+                    fold_env.ret.push_str(&format!("{} executed\n", no_exec.to_string()));
                 } else {
-                    ret.push_str("###{ executed\n");
+                    fold_env.ret.push_str("###{ executed\n");
                 }
+                fold_env.first_line = false;
                 continue;
+            } else if fold_started {
+                fold_env.ret.push_str("###{ executed\n");
+                fold_env.first_line = false;
             } else {
-                ret.push_str("###{ executed\n");
+                // push stuff in between folds
+                ret.push('\n');
+                ret.push_str(&line);
             }
         }
-        if line.starts_with("##########") {
-            break;
+        if !fold_started {
+            continue;
+        }
+        if line.starts_with("##########") && fold_started {
+            fold_env.old_output_started = true;
+            continue;
         }
         if line.starts_with("###}") {
-            end_marker = String::from(line);
-            break;
+            fold_env.end_marker = String::from(&line);
+            fold_env.make_request(&mut env);
+            ret.push_str(&fold_env.compile_return());
+            fold_started = false;
+            continue;
         }
-        ret.push_str(&line);
-        ret.push('\n');
-        if error {
+        if fold_env.old_output_started {
+            continue;
+        }
+        fold_env.ret.push_str(&line);
+        fold_env.ret.push('\n');
+        if fold_env.error {
             continue;
         }
         if line.starts_with('@') {
@@ -329,85 +444,55 @@ fn parse_input(input: &mut impl BufRead) -> String {
             let res_line = define_var(&String::from(line), &mut env)
                 .map_or_else(
                     |err| {
-                        error = true;
+                        fold_env.error = true;
                         format!("{}\n", err.to_string())
                     },
                     |res| format!("{}\n", res)
                 );
-            output.push_str(&res_line);
+            fold_env.output.push_str(&res_line);
         } else if line.starts_with('#') {
             // check for # @name <name> which will do a variable definition on the response
             resp_var_re.captures(&line)
                 .and_then(|caps| caps.get(1))
                 .and_then(|var_name| {
-                    response_variable = String::from(var_name.as_str());
+                    fold_env.response_variable = String::from(var_name.as_str());
                     Some(())
                 });
             // else skip comment
-        } else if !request_started && line.is_empty() {
+        } else if !fold_env.request_started && line.is_empty() {
             // line breaks should be ignored, but appear in output
-            output.push('\n');
+            fold_env.output.push('\n');
             continue;
-        } else if !request_started {
+        } else if !fold_env.request_started {
             // parse method and URL
             line.split_once(' ')
                 .map_or_else(
                     || {
-                        error = true;
-                        output.push_str(&format!("Could not parse line: {}\n", line));
+                        fold_env.error = true;
+                        fold_env.output.push_str(&format!("Could not parse line: {}\n", line));
                         ()
                     },
                     |(m, url_str)| {
-                        method = Method::get_match(m);
-                        url = String::from(url_str);
+                        fold_env.method = Method::get_match(m);
+                        fold_env.url = String::from(url_str);
                         ()
                     }
                 );
-            request_started = true;
-        } else if !request_body_started && !line.is_empty() {
-            headers.push(String::from(line));
-        } else if !request_body_started && line.is_empty() {
-            request_body_started = true
-        } else if request_body_started {
-            request_body.push_str(&line);
+            fold_env.request_started = true;
+        } else if !fold_env.request_body_started && !line.is_empty() {
+            fold_env.headers.push(String::from(line));
+        } else if !fold_env.request_body_started && line.is_empty() {
+            fold_env.request_body_started = true
+        } else if fold_env.request_body_started {
+            fold_env.request_body.push_str(&line);
         }
     }
 
-    if request_started && !error {
-        let req = Request {
-            method,
-            url,
-            headers,
-            data: if request_body_started { Some(request_body) } else { None },
-        };
-        req.make_request(&mut env)
-            .and_then(|(response, val)| {
-                if !response_variable.is_empty() {
-                    let res = set_var(&response_variable, &val, &mut env);
-                    if let Err(_) = res {
-                        return res;
-                    }
-                }
-                output.push_str(&response);
-                Ok(())
-            })
-            .or_else(|err| -> Result<(), ()>{
-                error = true;
-                output.push_str(&format!("{}\n", err.to_string()));
-                Ok(())
-            }).unwrap();
+    if !fold_env.made_request {
+        fold_env.make_request(&mut env);
+        ret.push_str(&fold_env.compile_return());
     }
 
-    if !output.is_empty() && output.chars().last().unwrap() != '\n' {
-        output.push('\n');
-    }
-    if end_marker.is_empty() {
-        output.push_str("###}");
-    } else {
-        output.push_str(&end_marker);
-    }
-    ret.push_str(&format!("########## {}{}\n", title, if error {"ERROR"} else {"RESULT"}));
-    ret.push_str(&output);
     ret
 }
 
@@ -953,6 +1038,41 @@ Content-Type: application/json
 @test = "{{postJson.success}}"
 ########## test response RESULT
 @test = "true"
+###}"#;
+            let result = parse_input(&mut test_in.as_bytes());
+            assert_eq!(
+                result,
+                String::from(test_out),
+                "Expected:\n{}\nGot:\n{}",
+                test_out,
+                result
+            );
+        }
+        {
+            let test_in = r#"###{
+# defining some vars
+@urls = ["https://10.0.0.20:5443/api/v1", "https://reqbin.com"]
+@obj = {"a": "test", "b": "hello"}
+###}
+
+# other vars
+###{ set url
+@test = "{{urls[1]}}/{{obj.b}}"
+###}"#;
+            let test_out = r#"###{ executed
+# defining some vars
+@urls = ["https://10.0.0.20:5443/api/v1", "https://reqbin.com"]
+@obj = {"a": "test", "b": "hello"}
+########## RESULT
+@urls = ["https://10.0.0.20:5443/api/v1", "https://reqbin.com"]
+@obj = {"a": "test", "b": "hello"}
+###}
+
+# other vars
+###{ set url executed
+@test = "{{urls[1]}}/{{obj.b}}"
+########## set url RESULT
+@test = "https://reqbin.com/hello"
 ###}"#;
             let result = parse_input(&mut test_in.as_bytes());
             assert_eq!(

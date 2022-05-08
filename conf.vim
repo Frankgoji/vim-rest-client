@@ -29,6 +29,10 @@ endfunction
 
 nnoremap <buffer> <leader>rs :call RestClientSetup()<cr>
 
+" With selection, filter selected text directly to vim-rest-client rather than
+" filtering only the content of a foldmarker
+vnoremap <buffer> <leader>rf :!~/.vim/binary/vim-rest-client<cr>
+
 " Delete .env.json if closing a .rest file.
 augroup Rest
     autocmd!
