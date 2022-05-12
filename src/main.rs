@@ -256,6 +256,7 @@ struct FoldEnv {
     ret: String,                // returned input
     output: String,             // returned executed output
     title: String,              // title of fold
+    start_marker: String,       // start of fold, without "executed" text
     end_marker: String,         // end of fold, in case there is a comment added
     error: bool,                // if error occurred during execution
     first_line: bool,           // if the first line has occurred yet
@@ -279,6 +280,7 @@ impl FoldEnv {
             ret: String::new(),
             output: String::new(),
             title: String::new(),
+            start_marker: String::new(),
             end_marker: String::new(),
             error: false,
             first_line: true,
@@ -300,6 +302,13 @@ impl FoldEnv {
     fn compile_return(&mut self) -> String {
         if !self.compiled {
             self.compiled = true;
+            let mut ret = String::new();
+            ret.push_str(&format!("{} executed ({})\n", self.start_marker,
+                if self.error {"ERROR"} else {"SUCCESS"}));
+            ret.push_str(&self.ret);
+            ret.push_str(&format!("########## {}{}\n",
+                self.title,
+                if self.error {"ERROR"} else {"RESULT"}));
             if !self.output.is_empty() && self.output.chars().last().unwrap() != '\n' {
                 self.output.push('\n');
             }
@@ -308,11 +317,8 @@ impl FoldEnv {
             } else {
                 self.output.push_str(&self.end_marker);
             }
-            self.ret.push_str(&format!("########## {}{}\n",
-                self.title,
-                if self.error {"ERROR"} else {"RESULT"}));
-            self.ret.push_str(&self.output);
-            self.ret.clone()
+            ret.push_str(&self.output);
+            ret
         } else {
             String::new()
         }
@@ -367,11 +373,11 @@ fn parse_input(input: &mut impl BufRead) -> String {
         .map_or_else(|_| json!({}), |val| val);
     let mut fold_env = FoldEnv::new();
     let mut ret = String::new();
-    let mut fold_started = true;
+    let mut fold_started = false;
 
     let resp_var_re = Regex::new(r"^#\s*@name\s*([^ ]+)").unwrap();
     let start_fold_re = Regex::new(r"^(###\{\s*(.*))$").unwrap();
-    let executed_re = Regex::new(r" ?executed$").unwrap();
+    let executed_re = Regex::new(r" ?executed( \((ERROR|SUCCESS)\))?$").unwrap();
     loop {
         let mut line = String::new();
         let res = input.read_line(&mut line);
@@ -390,7 +396,9 @@ fn parse_input(input: &mut impl BufRead) -> String {
             if let Some(caps) = start_fold_re.captures(&line) {
                 if !fold_started {
                     // previous endmarker doesn't end with newline
-                    ret.push('\n');
+                    if !ret.is_empty() {
+                        ret.push('\n');
+                    }
                     fold_started = true;
                     fold_env = FoldEnv::new();
                 }
@@ -402,18 +410,20 @@ fn parse_input(input: &mut impl BufRead) -> String {
                 }
                 if let Some(res) = caps.get(1) {
                     let no_exec = executed_re.replace(res.as_str(), "");
-                    fold_env.ret.push_str(&format!("{} executed\n", no_exec.to_string()));
+                    fold_env.start_marker = no_exec.to_string();
                 } else {
-                    fold_env.ret.push_str("###{ executed\n");
+                    fold_env.start_marker = String::from("###{");
                 }
                 fold_env.first_line = false;
                 continue;
             } else if fold_started {
-                fold_env.ret.push_str("###{ executed\n");
+                fold_env.start_marker = String::from("###{");
                 fold_env.first_line = false;
             } else {
                 // push stuff in between folds
-                ret.push('\n');
+                if !ret.is_empty() {
+                    ret.push('\n');
+                }
                 ret.push_str(&line);
             }
         }
@@ -843,7 +853,7 @@ mod tests {
             let test_in = r#"###{
 @baseUrl = "https://10.0.0.20:5443/api/v1"
 ###}"#;
-            let test_out = r#"###{ executed
+            let test_out = r#"###{ executed (SUCCESS)
 @baseUrl = "https://10.0.0.20:5443/api/v1"
 ########## RESULT
 @baseUrl = "https://10.0.0.20:5443/api/v1"
@@ -863,7 +873,7 @@ mod tests {
 @urls = ["https://10.0.0.20:5443/api/v1", "https://reqbin.com"]
 @obj = {"a": "test", "b": "hello"}
 ###}"#;
-            let test_out = r#"###{ executed
+            let test_out = r#"###{ executed (SUCCESS)
 # defining some vars
 @urls = ["https://10.0.0.20:5443/api/v1", "https://reqbin.com"]
 @obj = {"a": "test", "b": "hello"}
@@ -886,7 +896,7 @@ mod tests {
 @url1 = "{{urls[0]}}"
 @objA= "{{obj.a}}"
 ###}"#;
-            let test_out = r#"###{ selection executed
+            let test_out = r#"###{ selection executed (SUCCESS)
 @testUrl = "{{baseUrl}}/test"
 @url1 = "{{urls[0]}}"
 @objA= "{{obj.a}}"
@@ -905,12 +915,12 @@ mod tests {
             );
         }
         {
-            let test_in = r#"###{ executed
+            let test_in = r#"###{ executed (SUCCESS)
 @valid = "valid json"
 @willErr = not valid json
 @wontExecute = "won't execute even if valid"
 ###}"#;
-            let test_out = r#"###{ executed
+            let test_out = r#"###{ executed (ERROR)
 @valid = "valid json"
 @willErr = not valid json
 @wontExecute = "won't execute even if valid"
@@ -931,7 +941,7 @@ expected ident at line 1 column 2
             let test_in = r#"###{ no selection
 GET https://reqbin.com/echo/get/json
 ###}"#;
-            let should_contain = r#"###{ no selection executed
+            let should_contain = r#"###{ no selection executed (SUCCESS)
 GET https://reqbin.com/echo/get/json
 ########## no selection RESULT
 "#;
@@ -955,7 +965,7 @@ GET https://reqbin.com/echo/get/json
 @baseUrl = "https://reqbin.com"
 GET {{baseUrl}}/echo/get/json
 ###}"#;
-            let should_contain = r#"###{ selection executed
+            let should_contain = r#"###{ selection executed (SUCCESS)
 # @name getJson
 @baseUrl = "https://reqbin.com"
 GET {{baseUrl}}/echo/get/json
@@ -977,10 +987,10 @@ GET {{baseUrl}}/echo/get/json
             );
         }
         {
-            let test_in = r#"###{ test response
+            let test_in = r#"###{ test response executed (ERROR)
 @test = "{{getJson.success}}"
 ###}"#;
-            let test_out = r#"###{ test response executed
+            let test_out = r#"###{ test response executed (SUCCESS)
 @test = "{{getJson.success}}"
 ########## test response RESULT
 @test = "true"
@@ -995,7 +1005,7 @@ GET {{baseUrl}}/echo/get/json
             );
         }
         {
-            let test_in = r#"###{ test post executed
+            let test_in = r#"###{ test post executed (SUCCESS)
 # @name postJson
 POST {{baseUrl}}/echo/post/json
 Content-Type: application/json
@@ -1005,7 +1015,7 @@ Content-Type: application/json
     "hello": "world"
 }
 ###}"#;
-            let should_contain = r#"###{ test post executed
+            let should_contain = r#"###{ test post executed (SUCCESS)
 # @name postJson
 POST {{baseUrl}}/echo/post/json
 Content-Type: application/json
@@ -1034,7 +1044,7 @@ Content-Type: application/json
             let test_in = r#"###{ test response
 @test = "{{postJson.success}}"
 ###}"#;
-            let test_out = r#"###{ test response executed
+            let test_out = r#"###{ test response executed (SUCCESS)
 @test = "{{postJson.success}}"
 ########## test response RESULT
 @test = "true"
@@ -1049,7 +1059,9 @@ Content-Type: application/json
             );
         }
         {
-            let test_in = r#"###{
+            let test_in = r#"# This is a test
+
+###{
 # defining some vars
 @urls = ["https://10.0.0.20:5443/api/v1", "https://reqbin.com"]
 @obj = {"a": "test", "b": "hello"}
@@ -1059,7 +1071,9 @@ Content-Type: application/json
 ###{ set url
 @test = "{{urls[1]}}/{{obj.b}}"
 ###}"#;
-            let test_out = r#"###{ executed
+            let test_out = r#"# This is a test
+
+###{ executed (SUCCESS)
 # defining some vars
 @urls = ["https://10.0.0.20:5443/api/v1", "https://reqbin.com"]
 @obj = {"a": "test", "b": "hello"}
@@ -1069,7 +1083,7 @@ Content-Type: application/json
 ###}
 
 # other vars
-###{ set url executed
+###{ set url executed (SUCCESS)
 @test = "{{urls[1]}}/{{obj.b}}"
 ########## set url RESULT
 @test = "https://reqbin.com/hello"
