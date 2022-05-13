@@ -538,7 +538,7 @@ fn set_var(var: &String, val: &Value, env: &mut Value) -> Result<(), Box<dyn Err
 
 /// Given a string, parses the entire string for substitutions marked by any
 /// selectors in {{}}. If there are none, the original string is returned.
-/// Currently, does not allow substitutions to be nested.
+/// Allow substitutions to be nested.
 fn parse_selectors(s: &String, env: &mut Value) -> Result<String, Box<dyn Error>> {
     let re = Regex::new(r"\{\{([^{}]+)\}\}").unwrap();
     let mut replace_err: Option<String> = None;
@@ -564,7 +564,11 @@ fn parse_selectors(s: &String, env: &mut Value) -> Result<String, Box<dyn Error>
     if let Some(err) = replace_err {
         return Err(io_error(&err))?;
     }
-    Ok(value.to_string())
+    let subbed = value.to_string();
+    if re.is_match(&subbed) {
+        return parse_selectors(&subbed, env);
+    }
+    Ok(subbed)
 }
 
 /// Given a particular string representing a variable or jq selection, evaluate
@@ -604,6 +608,51 @@ mod tests {
             println!("file doesn't exist")
         } else {
             println!("file deleted")
+        }
+    }
+
+    #[test]
+    fn test_parse_selectors() {
+        // create dummy env (json) and call evaluate to see if it returns the
+        // right values
+        let mut env: Value = json!({
+            "arr": ["a", "b", "c"],
+            "str": "value",
+            "num": 1,
+            "bool": true,
+            "obj": {"a": 1, "b": 2},
+            "a": "test",
+            "a1": "success"
+        });
+
+        {
+            let s = String::from("\"Some String\"");
+            let res = parse_selectors(&s, &mut env).unwrap();
+            assert_eq!(res, s, "Expected {}, but got {}", s, res);
+        }
+        {
+            let s = String::from("\"Some {{str}}\"");
+            let res = parse_selectors(&s, &mut env).unwrap();
+            let expect = String::from("\"Some value\"");
+            assert_eq!(res, expect, "Expected {}, but got {}", expect, res);
+        }
+        {
+            let s = String::from("\"{{obj.{{arr[0]}}}}\"");
+            let res = parse_selectors(&s, &mut env).unwrap();
+            let expect = String::from("\"1\"");
+            assert_eq!(res, expect, "Expected {}, but got {}", expect, res);
+        }
+        {
+            let s = String::from("\"{{{{arr[0]}}}}\"");
+            let res = parse_selectors(&s, &mut env).unwrap();
+            let expect = String::from("\"test\"");
+            assert_eq!(res, expect, "Expected {}, but got {}", expect, res);
+        }
+        {
+            let s = String::from("\"{{{{arr[0]}}{{num}}}}\"");
+            let res = parse_selectors(&s, &mut env).unwrap();
+            let expect = String::from("\"success\"");
+            assert_eq!(res, expect, "Expected {}, but got {}", expect, res);
         }
     }
 

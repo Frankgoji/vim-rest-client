@@ -27,7 +27,27 @@ function! ClearEnv()
     endif
 endfunction
 
+" Function that cleans up all the extra output
+function! RestClientClean()
+    normal! zR
+
+    " executed (SUCCESS|ERROR)
+    execute "normal! :%g/^###{/call CleanStartMarker()\<cr>"
+
+    " ########## RESULT|ERROR
+    " response
+    execute "normal! :%g/^##########.*\\(RESULT\\|ERROR\\)$/call CleanResponse()\<cr>"
+endfunction
+function! CleanStartMarker()
+    execute "normal! :s/\\s*executed\\(\\s*(\\(SUCCESS\\|ERROR\\))\\)\\?$//\<cr>"
+endfunction
+function! CleanResponse()
+    execute "normal! V/^###}\<cr>kd"
+endfunction
+
+"""""""""" Mappings
 nnoremap <buffer> <leader>rs :call RestClientSetup()<cr>
+nnoremap <buffer> <leader>rl :call RestClientClean()<cr>
 
 " With selection, filter selected text directly to vim-rest-client rather than
 " filtering only the content of a foldmarker
