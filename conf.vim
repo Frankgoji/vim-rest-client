@@ -15,8 +15,9 @@ function! RestClientFilter()
     catch
         return
     endtry
-    execute "normal! V:!~/.vim/binary/vim-rest-client\<cr>"
+    execute "normal! V:!~/.vim/pack/vim-rest-client/bin/vim-rest-client\<cr>"
     normal! za
+    normal! zx
 endfunction
 
 " Function that deletes .env.json, assuming it exists in the current directory.
@@ -51,7 +52,7 @@ nnoremap <buffer> <leader>rl :call RestClientClean()<cr>
 
 " With selection, filter selected text directly to vim-rest-client rather than
 " filtering only the content of a foldmarker
-vnoremap <buffer> <leader>rf :!~/.vim/binary/vim-rest-client<cr>
+vnoremap <buffer> <leader>rf :!~/.vim/pack/vim-rest-client/bin/vim-rest-client<cr>zx
 
 " Delete .env.json if closing a .rest file.
 augroup Rest
