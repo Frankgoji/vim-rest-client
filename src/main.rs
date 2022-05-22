@@ -205,6 +205,9 @@ fn handle_basic_auth(header: String, basic_auth_re: &Regex) -> String {
     }).to_string()
 }
 
+// TODO: separate module for loop handling (with its own tests)
+// TODO: define loop syntax: probably easiest is to define as a while loop (while and endwhile)
+// TODO: the while condition has to be valid jq syntax that when processed should return a boolean
 fn call_curl(args: &Vec<String>, env: &mut Value) -> Result<String, Box<dyn Error>> {
     if let Some(_) = env.get(SSH_TO) {
         let rt = Runtime::new()?;
@@ -253,15 +256,16 @@ async fn ssh_curl(args: &Vec<String>, env: &mut Value) -> Result<String, Box<dyn
 
 /// Variables related to executing the content of a single fold
 struct FoldEnv {
-    ret: String,                // returned input
-    output: String,             // returned executed output
-    title: String,              // title of fold
-    start_marker: String,       // start of fold, without "executed" text
-    end_marker: String,         // end of fold, in case there is a comment added
-    error: bool,                // if error occurred during execution
-    first_line: bool,           // if the first line has occurred yet
-    old_output_started: bool,   // if the output from previous execution was reached
-    compiled: bool,             // if this FoldEnv has compiled the return
+    ret: String,                        // returned input
+    output: String,                     // returned executed output
+    title: String,                      // title of fold
+    start_marker: String,               // start of fold, without "executed" text
+    end_marker: String,                 // end of fold, in case there is a comment added
+    error: bool,                        // if error occurred during execution
+    first_line: bool,                   // if the first line has occurred yet
+    old_output_started: bool,           // if the output from previous execution was reached
+    compiled: bool,                     // if this FoldEnv has compiled the return
+    parent_fold: Option<Box<FoldEnv>>,  // if this FoldEnv is nested, contains the parent
 
     // request related vars
     request_started: bool,      // if the fold has started defining a request
@@ -286,6 +290,7 @@ impl FoldEnv {
             first_line: true,
             old_output_started: false,
             compiled: false,
+            parent_fold: None,
 
             request_started: false,
             request_body_started: false,
@@ -321,6 +326,35 @@ impl FoldEnv {
             ret
         } else {
             String::new()
+        }
+    }
+
+    /// Collects the total string to return, including input and output
+    fn compile_for_parent(&mut self) -> (String, String) {
+        if !self.compiled && self.parent_fold.is_some() {
+            self.compiled = true;
+            let mut ret = String::new();
+            let mut out = String::new();
+            ret.push_str(&format!("{} executed ({})\n", self.start_marker,
+                if self.error {"ERROR"} else {"SUCCESS"}));
+            ret.push_str(&self.ret);
+            if self.end_marker.is_empty() {
+                ret.push_str("###}");
+            } else {
+                ret.push_str(&self.end_marker);
+            }
+            ret.push('\n');
+            out.push_str(&format!("### {}{}\n",
+                self.title,
+                if self.error {"ERROR"} else {"RESULT"}));
+            if !self.output.is_empty() && self.output.chars().last().unwrap() != '\n' {
+                self.output.push('\n');
+            }
+            out.push_str(&self.output);
+            out.push_str("###\n");
+            (ret, out)
+        } else {
+            (String::new(), String::new())
         }
     }
 
@@ -392,40 +426,42 @@ fn parse_input(input: &mut impl BufRead) -> String {
                 fold_env.output.push_str(&e.to_string());
             },
         };
-        if fold_env.first_line || !fold_started {
-            if let Some(caps) = start_fold_re.captures(&line) {
-                if !fold_started {
-                    // previous endmarker doesn't end with newline
-                    if !ret.is_empty() {
-                        ret.push('\n');
-                    }
-                    fold_started = true;
-                    fold_env = FoldEnv::new();
-                }
-                if let Some(res) = caps.get(2) {
-                    let no_exec = executed_re.replace(res.as_str(), "");
-                    if !no_exec.to_string().is_empty() {
-                        fold_env.title = format!("{} ", no_exec.to_string());
-                    }
-                }
-                if let Some(res) = caps.get(1) {
-                    let no_exec = executed_re.replace(res.as_str(), "");
-                    fold_env.start_marker = no_exec.to_string();
-                } else {
-                    fold_env.start_marker = String::from("###{");
-                }
-                fold_env.first_line = false;
-                continue;
-            } else if fold_started {
-                fold_env.start_marker = String::from("###{");
-                fold_env.first_line = false;
-            } else {
-                // push stuff in between folds
+        if let Some(caps) = start_fold_re.captures(&line) {
+            if !fold_started {
+                // previous endmarker doesn't end with newline
                 if !ret.is_empty() {
                     ret.push('\n');
                 }
-                ret.push_str(&line);
+                fold_started = true;
+                fold_env = FoldEnv::new();
+            } else {
+                let mut nested_fold = FoldEnv::new();
+                nested_fold.parent_fold = Some(Box::new(fold_env));
+                fold_env = nested_fold;
             }
+            if let Some(res) = caps.get(2) {
+                let no_exec = executed_re.replace(res.as_str(), "");
+                if !no_exec.to_string().is_empty() {
+                    fold_env.title = format!("{} ", no_exec.to_string());
+                }
+            }
+            if let Some(res) = caps.get(1) {
+                let no_exec = executed_re.replace(res.as_str(), "");
+                fold_env.start_marker = no_exec.to_string();
+            } else {
+                fold_env.start_marker = String::from("###{");
+            }
+            fold_env.first_line = false;
+            continue;
+        } else if fold_env.first_line && fold_started {
+            fold_env.start_marker = String::from("###{");
+            fold_env.first_line = false;
+        } else if !fold_started {
+            // push stuff in between folds
+            if !ret.is_empty() {
+                ret.push('\n');
+            }
+            ret.push_str(&line);
         }
         if !fold_started {
             continue;
@@ -437,8 +473,18 @@ fn parse_input(input: &mut impl BufRead) -> String {
         if line.starts_with("###}") {
             fold_env.end_marker = String::from(&line);
             fold_env.make_request(&mut env);
-            ret.push_str(&fold_env.compile_return());
-            fold_started = false;
+            if fold_env.parent_fold.is_some() {
+                let (nest_ret, nest_out) = &fold_env.compile_for_parent();
+                fold_env.parent_fold.as_mut().unwrap().ret.push_str(&nest_ret);
+                fold_env.parent_fold.as_mut().unwrap().output.push_str(&nest_out);
+                let mut parent_err = fold_env.parent_fold.as_mut().unwrap().error;
+                parent_err = fold_env.error || parent_err;
+                fold_env = *fold_env.parent_fold.take().unwrap();
+                fold_env.error = parent_err;
+            } else {
+                ret.push_str(&fold_env.compile_return());
+                fold_started = false;
+            }
             continue;
         }
         if fold_env.old_output_started {
@@ -1136,6 +1182,111 @@ Content-Type: application/json
 @test = "{{urls[1]}}/{{obj.b}}"
 ########## set url RESULT
 @test = "https://reqbin.com/hello"
+###}"#;
+            let result = parse_input(&mut test_in.as_bytes());
+            assert_eq!(
+                result,
+                String::from(test_out),
+                "Expected:\n{}\nGot:\n{}",
+                test_out,
+                result
+            );
+        }
+        {
+            let test_in = r#"###{ outer
+@test = "https://reqbin.com"
+###{ inner
+# @name innerReq
+GET {{baseUrl}}/echo/get/json
+###}
+@res = "{{innerReq.success}}"
+###}"#;
+            let test_out = r#"(?s)###\{ outer executed \(SUCCESS\)
+@test = "https://reqbin.com"
+###\{ inner executed \(SUCCESS\)
+# @name innerReq
+GET \{\{baseUrl\}\}/echo/get/json
+###\}
+@res = "\{\{innerReq.success\}\}"
+########## outer RESULT
+@test = "https://reqbin.com"
+### inner RESULT
+.*
+###
+@res = "true"
+###\}"#;
+            let test_out_re = Regex::new(test_out).unwrap();
+            let result = parse_input(&mut test_in.as_bytes());
+            assert!(
+                test_out_re.is_match(&result),
+                "Result:\n{}",
+                result
+            );
+        }
+        {
+            let test_in = r#"###{ outer
+@test = "https://reqbin.com"
+###{ inner success
+@willSucceed = "{{test}}"
+###}
+###{ inner error
+@willFail = "{{dne}}"
+###}
+@test2 = "{{willFail}}"
+###}"#;
+            let test_out = r#"###{ outer executed (ERROR)
+@test = "https://reqbin.com"
+###{ inner success executed (SUCCESS)
+@willSucceed = "{{test}}"
+###}
+###{ inner error executed (ERROR)
+@willFail = "{{dne}}"
+###}
+@test2 = "{{willFail}}"
+########## outer ERROR
+@test = "https://reqbin.com"
+### inner success RESULT
+@willSucceed = "https://reqbin.com"
+###
+### inner error ERROR
+failed to get resource at dne
+###
+###}"#;
+            let result = parse_input(&mut test_in.as_bytes());
+            assert_eq!(
+                result,
+                String::from(test_out),
+                "Expected:\n{}\nGot:\n{}",
+                test_out,
+                result
+            );
+        }
+        {
+            let test_in = r#"###{ outer
+@test = "https://reqbin.com"
+###{ inner success
+@willSucceed = "{{test}}"
+###}
+###{ inner error
+@willFail = "{{dne}}"
+###}
+###}"#;
+            let test_out = r#"###{ outer executed (ERROR)
+@test = "https://reqbin.com"
+###{ inner success executed (SUCCESS)
+@willSucceed = "{{test}}"
+###}
+###{ inner error executed (ERROR)
+@willFail = "{{dne}}"
+###}
+########## outer ERROR
+@test = "https://reqbin.com"
+### inner success RESULT
+@willSucceed = "https://reqbin.com"
+###
+### inner error ERROR
+failed to get resource at dne
+###
 ###}"#;
             let result = parse_input(&mut test_in.as_bytes());
             assert_eq!(
