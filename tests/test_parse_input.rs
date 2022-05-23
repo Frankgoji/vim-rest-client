@@ -366,6 +366,37 @@ failed to get resource at dne
             result
         );
     }
+    {
+        let test_in = r#"###{ outer
+@test = "https://reqbin.com"
+# @name outerReq
+GET {{baseUrl}}/echo/get/json
+###{ inner
+@res = "{{outerReq.success}}"
+###}
+###}"#;
+        let test_out = r#"(?s)###\{ outer executed \(SUCCESS\)
+@test = "https://reqbin.com"
+# @name outerReq
+GET \{\{baseUrl\}\}/echo/get/json
+###\{ inner executed \(SUCCESS\)
+@res = "\{\{outerReq.success\}\}"
+###\}
+########## outer RESULT
+@test = "https://reqbin.com"
+.*
+### inner RESULT
+@res = "true"
+###
+###\}"#;
+        let test_out_re = Regex::new(test_out).unwrap();
+        let result = parse_input(&mut test_in.as_bytes());
+        assert!(
+            test_out_re.is_match(&result),
+            "Result:\n{}",
+            result
+        );
+    }
 
     clear_env_file();
 }

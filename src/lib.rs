@@ -1,5 +1,6 @@
 /// Vim REST Client helper script.
 /// Parses output filtered from the .rest file by Vim.
+use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::fs;
@@ -8,10 +9,12 @@ use std::process::Command;
 
 use base64::encode;
 use jq_rs;
-use openssh::SessionBuilder;
+use openssh::{Session, SessionBuilder};
 use regex::{Regex, Captures};
 use serde_json::{self, Value, json};
 use tokio::runtime::Runtime;
+
+mod process_while;
 
 // TODO: perhaps configurable location by ENV variable
 // TODO: or maybe the env should be based on the file name, like .file.rest.json
@@ -70,7 +73,12 @@ impl Request {
     /// Return the response headers and response body (pretty-printed, if JSON),
     /// or the error with error cause if curl failed.
     /// (String, Value) = (entire response string with headers, just response)
-    fn make_request(&self, env: &mut Value) -> Result<(String, Value), Box<dyn Error>> {
+    fn make_request
+    (
+        &self,
+        sessions: &mut HashMap<String, Session>,
+        env: &mut Value
+    ) -> Result<(String, Value), Box<dyn Error>> {
         let method = self.method.to_string();
         let url = parse_selectors(&self.url, env)?;
         let mut header_err: Option<String> = None;
@@ -105,7 +113,7 @@ impl Request {
             args.push(String::from("-d"));
             args.push(String::from(d));
         }
-        let ret = call_curl(&args, env)?;
+        let ret = call_curl(&args, sessions, env)?;
 
         enum Response {
             NoSplit(String), // whole response
@@ -149,13 +157,15 @@ fn handle_basic_auth(header: String, basic_auth_re: &Regex) -> String {
     }).to_string()
 }
 
-// TODO: separate module for loop handling (with its own tests)
-// TODO: define loop syntax: probably easiest is to define as a while loop (while and endwhile)
-// TODO: the while condition has to be valid jq syntax that when processed should return a boolean
-fn call_curl(args: &Vec<String>, env: &mut Value) -> Result<String, Box<dyn Error>> {
+fn call_curl
+(
+    args: &Vec<String>,
+    sessions: &mut HashMap<String, Session>,
+    env: &mut Value
+) -> Result<String, Box<dyn Error>> {
     if let Some(_) = env.get(SSH_TO) {
         let rt = Runtime::new()?;
-        return rt.block_on(ssh_curl(args, env));
+        return rt.block_on(ssh_curl(args, sessions, env));
     }
     let curl = Command::new("curl")
         .args(args)
@@ -169,21 +179,30 @@ fn call_curl(args: &Vec<String>, env: &mut Value) -> Result<String, Box<dyn Erro
     Ok(ret)
 }
 
-async fn ssh_curl(args: &Vec<String>, env: &mut Value) -> Result<String, Box<dyn Error>> {
-    let mut session_builder = SessionBuilder::default();
-    if let Some(config) = env.get(SSH_CONFIG) {
-        let config = config.as_str().ok_or_else(|| io_error(&format!("{} was not a string", SSH_CONFIG)))?;
-        session_builder.config_file(config);
-    }
-    if let Some(key) = env.get(SSH_KEY) {
-        let key = key.as_str().ok_or_else(|| io_error(&format!("{} was not a string", SSH_KEY)))?;
-        session_builder.keyfile(key);
-    }
+async fn ssh_curl
+(
+    args: &Vec<String>,
+    sessions: &mut HashMap<String, Session>,
+    env: &mut Value
+) -> Result<String, Box<dyn Error>> {
     let dest = env.get(SSH_TO)
         .unwrap()
         .as_str()
         .ok_or_else(|| io_error(&format!("{} was not a string", SSH_TO)))?;
-    let session = session_builder.connect_mux(dest).await?;
+    let session = if let Some(sess_ref) = sessions.remove(dest) {
+        sess_ref
+    } else {
+        let mut session_builder = SessionBuilder::default();
+        if let Some(config) = env.get(SSH_CONFIG) {
+            let config = config.as_str().ok_or_else(|| io_error(&format!("{} was not a string", SSH_CONFIG)))?;
+            session_builder.config_file(config);
+        }
+        if let Some(key) = env.get(SSH_KEY) {
+            let key = key.as_str().ok_or_else(|| io_error(&format!("{} was not a string", SSH_KEY)))?;
+            session_builder.keyfile(key);
+        }
+        session_builder.connect_mux(dest).await?
+    };
     let curl = session.command("curl")
         .args(args)
         .output()
@@ -194,7 +213,7 @@ async fn ssh_curl(args: &Vec<String>, env: &mut Value) -> Result<String, Box<dyn
     }
     let ret = String::from_utf8_lossy(&curl.stdout).to_string();
     let ret = ret.replace('\r', "");
-    session.close().await?;
+    sessions.insert(String::from(dest), session);
     Ok(ret)
 }
 
@@ -288,6 +307,10 @@ impl FoldEnv {
                 ret.push_str(&self.end_marker);
             }
             ret.push('\n');
+            let parent_out = &self.parent_fold.as_ref().unwrap().output;
+            if !parent_out.is_empty() && parent_out.chars().last().unwrap() != '\n' {
+                out.push('\n');
+            }
             out.push_str(&format!("### {}{}\n",
                 self.title,
                 if self.error {"ERROR"} else {"RESULT"}));
@@ -303,7 +326,7 @@ impl FoldEnv {
     }
 
     /// Builds and makes request if appropriate
-    fn make_request(&mut self, env: &mut Value) {
+    fn make_request(&mut self, sessions: &mut HashMap<String, Session>, env: &mut Value) {
         if self.request_started && !self.error {
             let method = self.method.clone();
             let url = self.url.clone();
@@ -319,7 +342,7 @@ impl FoldEnv {
                 },
             };
             self.made_request = true;
-            req.make_request(env)
+            req.make_request(sessions, env)
                 .and_then(|(response, val)| {
                     if !self.response_variable.is_empty() {
                         let res = set_var(&self.response_variable, &val, env);
@@ -339,6 +362,31 @@ impl FoldEnv {
     }
 }
 
+struct SshSessions {
+    sessions: HashMap<String, Session>,
+}
+
+impl SshSessions {
+    fn new() -> SshSessions {
+        SshSessions {
+            sessions: HashMap::new(),
+        }
+    }
+
+    async fn close_sessions(&mut self) {
+        for (_, session) in self.sessions.drain() {
+            session.close().await.unwrap();
+        }
+    }
+}
+
+impl Drop for SshSessions {
+    fn drop(&mut self) {
+        let rt = Runtime::new().unwrap();
+        rt.block_on(self.close_sessions());
+    }
+}
+
 /// Parse input lines that either define a variable or make a request
 /// Must return the input lines, as well as appropriate output
 /// Each block can have some variable definitions, but they must be before the
@@ -352,6 +400,7 @@ pub fn parse_input(input: &mut impl BufRead) -> String {
     let mut fold_env = FoldEnv::new();
     let mut ret = String::new();
     let mut fold_started = false;
+    let mut ssh_sessions = SshSessions::new();
 
     let resp_var_re = Regex::new(r"^#\s*@name\s*([^ ]+)").unwrap();
     let start_fold_re = Regex::new(r"^(###\{\s*(.*))$").unwrap();
@@ -379,6 +428,10 @@ pub fn parse_input(input: &mut impl BufRead) -> String {
                 fold_started = true;
                 fold_env = FoldEnv::new();
             } else {
+                // if creating a new nested_fold, then check for request and run it
+                if !fold_env.made_request {
+                    fold_env.make_request(&mut ssh_sessions.sessions, &mut env);
+                }
                 let mut nested_fold = FoldEnv::new();
                 nested_fold.parent_fold = Some(Box::new(fold_env));
                 fold_env = nested_fold;
@@ -416,7 +469,9 @@ pub fn parse_input(input: &mut impl BufRead) -> String {
         }
         if line.starts_with("###}") {
             fold_env.end_marker = String::from(&line);
-            fold_env.make_request(&mut env);
+            if !fold_env.made_request {
+                fold_env.make_request(&mut ssh_sessions.sessions, &mut env);
+            }
             if fold_env.parent_fold.is_some() {
                 let (nest_ret, nest_out) = &fold_env.compile_for_parent();
                 fold_env.parent_fold.as_mut().unwrap().ret.push_str(&nest_ret);
@@ -473,6 +528,7 @@ pub fn parse_input(input: &mut impl BufRead) -> String {
                         ()
                     },
                     |(m, url_str)| {
+                        fold_env.made_request = false;
                         fold_env.method = Method::get_match(m);
                         fold_env.url = String::from(url_str);
                         ()
@@ -489,7 +545,7 @@ pub fn parse_input(input: &mut impl BufRead) -> String {
     }
 
     if !fold_env.made_request {
-        fold_env.make_request(&mut env);
+        fold_env.make_request(&mut ssh_sessions.sessions, &mut env);
         ret.push_str(&fold_env.compile_return());
     }
 
@@ -803,6 +859,7 @@ mod tests {
             "ct": "Content-Type",
             "json": "application/json"
         });
+        let mut sessions: HashMap<String, Session> = HashMap::new();
         {
             let req = Request {
                 method: Method::Get,
@@ -810,7 +867,7 @@ mod tests {
                 headers: vec![],
                 data: None,
             };
-            let (resp, val) = req.make_request(&mut env).unwrap();
+            let (resp, val) = req.make_request(&mut sessions, &mut env).unwrap();
             let expected = "<?xml version=\"1.0\" encoding=\"utf-8\"?><Response>  <ResponseCode>0</ResponseCode>  <ResponseMessage>Success</ResponseMessage></Response>";
             let resp = resp.lines().last().unwrap();
             assert_eq!(resp, expected, "Expected {}, got {}", expected, resp);
@@ -823,7 +880,7 @@ mod tests {
                 headers: vec![],
                 data: None,
             };
-            let (resp, _) = req.make_request(&mut env).unwrap();
+            let (resp, _) = req.make_request(&mut sessions, &mut env).unwrap();
             let expected = "<?xml version=\"1.0\" encoding=\"utf-8\"?><Response>  <ResponseCode>0</ResponseCode>  <ResponseMessage>Success</ResponseMessage></Response>";
             let resp = resp.lines().last().unwrap();
             assert_eq!(resp, expected, "Expected {}, got {}", expected, resp);
@@ -835,7 +892,7 @@ mod tests {
                 headers: vec![String::from("{{ct}}: {{json}}")],
                 data: Some(String::from("{\"test\": \"value\"}")),
             };
-            let (resp, val) = req.make_request(&mut env).unwrap();
+            let (resp, val) = req.make_request(&mut sessions, &mut env).unwrap();
             let expected = r#"{
   "success": "true"
 }"#;
@@ -849,7 +906,7 @@ mod tests {
                 headers: vec![String::from("{{dne}}: application/json")],
                 data: Some(String::from("{\"test\": \"value\"}")),
             };
-            let resp = req.make_request(&mut env);
+            let resp = req.make_request(&mut sessions, &mut env);
             match resp {
                 Ok(ret) => panic!("Expected error, but got Ok with value {:?}", ret),
                 Err(e) => assert_eq!(
@@ -867,7 +924,7 @@ mod tests {
                 headers: vec![],
                 data: None,
             };
-            let resp = req.make_request(&mut env);
+            let resp = req.make_request(&mut sessions, &mut env);
             match resp {
                 Ok(ret) => panic!("Expected error, but got Ok with value {:?}", ret),
                 Err(e) => assert_eq!(
