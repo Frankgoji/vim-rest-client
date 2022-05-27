@@ -1,7 +1,9 @@
-use vim_rest_client::{parse_input, ENV_FILE};
+use vim_rest_client::{parse_input, ENV_FILE, SshSessions};
 
 use std::fs;
 use regex::Regex;
+
+use serde_json::json;
 
 fn clear_env_file() {
     if let Err(_) = fs::remove_file(ENV_FILE) {
@@ -13,6 +15,8 @@ fn clear_env_file() {
 
 #[test]
 fn test_parse_input() {
+    let mut ssh_sessions = SshSessions::new();
+    let mut env = json!({});
     {
         let test_in = r#"###{
 @baseUrl = "https://10.0.0.20:5443/api/v1"
@@ -22,7 +26,7 @@ fn test_parse_input() {
 ########## RESULT
 @baseUrl = "https://10.0.0.20:5443/api/v1"
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes());
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -45,7 +49,7 @@ fn test_parse_input() {
 @urls = ["https://10.0.0.20:5443/api/v1", "https://reqbin.com"]
 @obj = {"a": "test", "b": "hello"}
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes());
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -56,20 +60,20 @@ fn test_parse_input() {
     }
     {
         let test_in = r#"###{ selection
-@testUrl = "{{baseUrl}}/test"
-@url1 = "{{urls[0]}}"
-@objA= "{{obj.a}}"
+@testUrl = "{{.baseUrl}}/test"
+@url1 = "{{.urls[0]}}"
+@objA= "{{.obj.a}}"
 ###}"#;
         let test_out = r#"###{ selection executed (SUCCESS)
-@testUrl = "{{baseUrl}}/test"
-@url1 = "{{urls[0]}}"
-@objA= "{{obj.a}}"
+@testUrl = "{{.baseUrl}}/test"
+@url1 = "{{.urls[0]}}"
+@objA= "{{.obj.a}}"
 ########## selection RESULT
 @testUrl = "https://10.0.0.20:5443/api/v1/test"
 @url1 = "https://10.0.0.20:5443/api/v1"
 @objA = "test"
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes());
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -92,7 +96,7 @@ fn test_parse_input() {
 @valid = "valid json"
 expected ident at line 1 column 2
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes());
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -109,7 +113,7 @@ GET https://reqbin.com/echo/get/json
 GET https://reqbin.com/echo/get/json
 ########## no selection RESULT
 "#;
-        let result = parse_input(&mut test_in.as_bytes());
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
         assert!(
             result.contains(should_contain),
             "Expected output should contain:\n{}\nResponse:\n{}",
@@ -127,16 +131,16 @@ GET https://reqbin.com/echo/get/json
         let test_in = r#"###{ selection
 # @name getJson
 @baseUrl = "https://reqbin.com"
-GET {{baseUrl}}/echo/get/json
+GET {{.baseUrl}}/echo/get/json
 ###}"#;
         let should_contain = r#"###{ selection executed (SUCCESS)
 # @name getJson
 @baseUrl = "https://reqbin.com"
-GET {{baseUrl}}/echo/get/json
+GET {{.baseUrl}}/echo/get/json
 ########## selection RESULT
 @baseUrl = "https://reqbin.com"
 "#;
-        let result = parse_input(&mut test_in.as_bytes());
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
         assert!(
             result.contains(should_contain),
             "Expected output should contain:\n{}\nResponse:\n{}",
@@ -152,14 +156,14 @@ GET {{baseUrl}}/echo/get/json
     }
     {
         let test_in = r#"###{ test response executed (ERROR)
-@test = "{{getJson.success}}"
+@test = "{{.getJson.success}}"
 ###}"#;
         let test_out = r#"###{ test response executed (SUCCESS)
-@test = "{{getJson.success}}"
+@test = "{{.getJson.success}}"
 ########## test response RESULT
 @test = "true"
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes());
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -171,7 +175,7 @@ GET {{baseUrl}}/echo/get/json
     {
         let test_in = r#"###{ test post executed (SUCCESS)
 # @name postJson
-POST {{baseUrl}}/echo/post/json
+POST {{.baseUrl}}/echo/post/json
 Content-Type: application/json
 
 {
@@ -181,7 +185,7 @@ Content-Type: application/json
 ###}"#;
         let should_contain = r#"###{ test post executed (SUCCESS)
 # @name postJson
-POST {{baseUrl}}/echo/post/json
+POST {{.baseUrl}}/echo/post/json
 Content-Type: application/json
 
 {
@@ -190,7 +194,7 @@ Content-Type: application/json
 }
 ########## test post RESULT
 "#;
-        let result = parse_input(&mut test_in.as_bytes());
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
         assert!(
             result.contains(should_contain),
             "Expected output should contain:\n{}\nResponse:\n{}",
@@ -206,14 +210,14 @@ Content-Type: application/json
     }
     {
         let test_in = r#"###{ test response
-@test = "{{postJson.success}}"
+@test = "{{.postJson.success}}"
 ###}"#;
         let test_out = r#"###{ test response executed (SUCCESS)
-@test = "{{postJson.success}}"
+@test = "{{.postJson.success}}"
 ########## test response RESULT
 @test = "true"
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes());
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -233,7 +237,7 @@ Content-Type: application/json
 
 # other vars
 ###{ set url
-@test = "{{urls[1]}}/{{obj.b}}"
+@test = "{{.urls[1]}}/{{.obj.b}}"
 ###}"#;
         let test_out = r#"# This is a test
 
@@ -248,11 +252,11 @@ Content-Type: application/json
 
 # other vars
 ###{ set url executed (SUCCESS)
-@test = "{{urls[1]}}/{{obj.b}}"
+@test = "{{.urls[1]}}/{{.obj.b}}"
 ########## set url RESULT
 @test = "https://reqbin.com/hello"
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes());
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -266,17 +270,17 @@ Content-Type: application/json
 @test = "https://reqbin.com"
 ###{ inner
 # @name innerReq
-GET {{baseUrl}}/echo/get/json
+GET {{.baseUrl}}/echo/get/json
 ###}
-@res = "{{innerReq.success}}"
+@res = "{{.innerReq.success}}"
 ###}"#;
         let test_out = r#"(?s)###\{ outer executed \(SUCCESS\)
 @test = "https://reqbin.com"
 ###\{ inner executed \(SUCCESS\)
 # @name innerReq
-GET \{\{baseUrl\}\}/echo/get/json
+GET \{\{.baseUrl\}\}/echo/get/json
 ###\}
-@res = "\{\{innerReq.success\}\}"
+@res = "\{\{.innerReq.success\}\}"
 ########## outer RESULT
 @test = "https://reqbin.com"
 ### inner RESULT
@@ -285,7 +289,7 @@ GET \{\{baseUrl\}\}/echo/get/json
 @res = "true"
 ###\}"#;
         let test_out_re = Regex::new(test_out).unwrap();
-        let result = parse_input(&mut test_in.as_bytes());
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
         assert!(
             test_out_re.is_match(&result),
             "Result:\n{}",
@@ -296,32 +300,32 @@ GET \{\{baseUrl\}\}/echo/get/json
         let test_in = r#"###{ outer
 @test = "https://reqbin.com"
 ###{ inner success
-@willSucceed = "{{test}}"
+@willSucceed = "{{.test}}"
 ###}
 ###{ inner error
-@willFail = "{{dne}}"
+@willFail = "{{.dne}}"
 ###}
-@test2 = "{{willFail}}"
+@test2 = "{{.willFail}}"
 ###}"#;
         let test_out = r#"###{ outer executed (ERROR)
 @test = "https://reqbin.com"
 ###{ inner success executed (SUCCESS)
-@willSucceed = "{{test}}"
+@willSucceed = "{{.test}}"
 ###}
 ###{ inner error executed (ERROR)
-@willFail = "{{dne}}"
+@willFail = "{{.dne}}"
 ###}
-@test2 = "{{willFail}}"
+@test2 = "{{.willFail}}"
 ########## outer ERROR
 @test = "https://reqbin.com"
 ### inner success RESULT
 @willSucceed = "https://reqbin.com"
 ###
 ### inner error ERROR
-failed to get resource at dne
+failed to get resource at .dne
 ###
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes());
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -334,19 +338,19 @@ failed to get resource at dne
         let test_in = r#"###{ outer
 @test = "https://reqbin.com"
 ###{ inner success
-@willSucceed = "{{test}}"
+@willSucceed = "{{.test}}"
 ###}
 ###{ inner error
-@willFail = "{{dne}}"
+@willFail = "{{.dne}}"
 ###}
 ###}"#;
         let test_out = r#"###{ outer executed (ERROR)
 @test = "https://reqbin.com"
 ###{ inner success executed (SUCCESS)
-@willSucceed = "{{test}}"
+@willSucceed = "{{.test}}"
 ###}
 ###{ inner error executed (ERROR)
-@willFail = "{{dne}}"
+@willFail = "{{.dne}}"
 ###}
 ########## outer ERROR
 @test = "https://reqbin.com"
@@ -354,10 +358,10 @@ failed to get resource at dne
 @willSucceed = "https://reqbin.com"
 ###
 ### inner error ERROR
-failed to get resource at dne
+failed to get resource at .dne
 ###
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes());
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -370,17 +374,17 @@ failed to get resource at dne
         let test_in = r#"###{ outer
 @test = "https://reqbin.com"
 # @name outerReq
-GET {{baseUrl}}/echo/get/json
+GET {{.baseUrl}}/echo/get/json
 ###{ inner
-@res = "{{outerReq.success}}"
+@res = "{{.outerReq.success}}"
 ###}
 ###}"#;
         let test_out = r#"(?s)###\{ outer executed \(SUCCESS\)
 @test = "https://reqbin.com"
 # @name outerReq
-GET \{\{baseUrl\}\}/echo/get/json
+GET \{\{.baseUrl\}\}/echo/get/json
 ###\{ inner executed \(SUCCESS\)
-@res = "\{\{outerReq.success\}\}"
+@res = "\{\{.outerReq.success\}\}"
 ###\}
 ########## outer RESULT
 @test = "https://reqbin.com"
@@ -390,7 +394,7 @@ GET \{\{baseUrl\}\}/echo/get/json
 ###
 ###\}"#;
         let test_out_re = Regex::new(test_out).unwrap();
-        let result = parse_input(&mut test_in.as_bytes());
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
         assert!(
             test_out_re.is_match(&result),
             "Result:\n{}",

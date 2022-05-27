@@ -56,10 +56,24 @@
 ///     "success": "true"
 /// }
 /// ###}
+use std::fs;
 use std::io;
+
+use serde_json::{json, Value};
+use vim_rest_client::{ENV_FILE, io_error};
 
 fn main() {
     let stdin = io::stdin();
     let mut handle = stdin.lock();
-    println!("{}", vim_rest_client::parse_input(&mut handle));
+    let mut ssh_sessions = vim_rest_client::SshSessions::new();
+    let mut env: Value = fs::read_to_string(ENV_FILE)
+        .and_then(|env_string| serde_json::from_str(&env_string)
+              .or_else(|e| Err(io_error(&e.to_string()))))
+        .map_or_else(|_| json!({}), |val| val);
+    println!("{}", vim_rest_client::parse_input(
+            &mut handle,
+            &mut ssh_sessions.sessions,
+            &mut env,
+            false
+    ));
 }

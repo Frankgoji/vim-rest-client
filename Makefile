@@ -1,3 +1,6 @@
+test:
+	cargo test -- --test-threads=1
+
 build:
 	docker run --rm -it -v "$$(pwd):/home/rust/src" vim-rest-client-builder \
 		cargo build
