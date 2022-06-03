@@ -401,6 +401,63 @@ GET \{\{.baseUrl\}\}/echo/get/json
             result
         );
     }
+    {
+        let test_in = r#"###{ executed (SUCCESS)
+@i = 0
+@willErr = {.i + 1}
+###}"#;
+        let test_out = r#"###{ executed (ERROR)
+@i = 0
+@willErr = {.i + 1}
+########## ERROR
+@i = 0
+key must be a string at line 1 column 2
+###}"#;
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        assert_eq!(
+            result,
+            String::from(test_out),
+            "Expected:\n{}\nGot:\n{}",
+            test_out,
+            result
+        );
+    }
+    {
+        let test_in = r#"###{ test
+@i = {.i + 1}
+###} end of test"#;
+        let test_out = r#"###{ test executed (ERROR)
+@i = {.i + 1}
+########## test ERROR
+key must be a string at line 1 column 2
+###} end of test"#;
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        assert_eq!(
+            result,
+            String::from(test_out),
+            "Expected:\n{}\nGot:\n{}",
+            test_out,
+            result
+        );
+    }
+    {
+        let test_in = r#"###{ while {{.i < 5}}
+@i = {.i + 1}
+###} endwhile"#;
+        let test_out = r#"###{ while {{.i < 5}} executed (ERROR)
+@i = {.i + 1}
+########## while {{.i < 5}} ERROR
+key must be a string at line 1 column 2
+###} endwhile"#;
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        assert_eq!(
+            result,
+            String::from(test_out),
+            "Expected:\n{}\nGot:\n{}",
+            test_out,
+            result
+        );
+    }
 
     clear_env_file();
 }

@@ -22,6 +22,7 @@ use crate::{parse_input, parse_selectors};
 
 pub const WHILE_START: &str = r"^###\{\s*while\s*(\{\{.*\}\})";
 const WHILE_END: &str = r"^###\}\s*endwhile";
+const ERROR: &str = r"\(ERROR\)$";
 
 pub struct While {
     condition: String,      // while loop condition, should be valid jq selector
@@ -101,9 +102,12 @@ impl While {
 
     /// Run while loop: call parse_input on block while the condition is true
     fn run(&mut self, sessions: &mut HashMap<String, Session>, env: &mut Value) {
-        while self.check_condition(env) {
+        let error_re = Regex::new(ERROR).unwrap();
+        while self.check_condition(env) && !self.error {
             // call parse_input with ignore_first_while true to avoid infinite loop
             self.output = parse_input(&mut self.block.clone().as_bytes(), sessions, env, true);
+            let first_line = self.output.lines().next().unwrap_or("");
+            self.error = self.error || error_re.is_match(first_line);
         }
         if self.output.is_empty() {
             self.gen_default_output(String::new());
@@ -158,7 +162,6 @@ impl While {
             .map_or_else(
                 |err| {
                     self.error = true;
-                    //self.output = err.to_string();
                     self.gen_default_output(err.to_string());
                     false
                 },
@@ -517,6 +520,33 @@ failed to get resource at .j
                 w.output
             );
             assert!(!w.error);
+        }
+        {
+            let mut env: Value = json!({
+                "i": 0
+            });
+            let first_line = String::from("###{ while {{.i < 5}}");
+            let input = String::from(r#"@i = {.i + 1}
+###} endwhile"#);
+            let w = While::parse_while(
+                &first_line,
+                &mut input.as_bytes(),
+                &mut ssh_sessions.sessions,
+                &mut env
+            );
+            let expected = String::from(r#"###{ while {{.i < 5}} executed (ERROR)
+@i = {.i + 1}
+########## while {{.i < 5}} ERROR
+key must be a string at line 1 column 2
+###} endwhile"#);
+            assert_eq!(
+                w.output,
+                expected,
+                "Expected:\n{}\nGot:\n{}",
+                expected,
+                w.output
+            );
+            assert!(w.error);
         }
 
         clear_env_file();

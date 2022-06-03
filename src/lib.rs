@@ -268,7 +268,7 @@ impl FoldEnv {
 
     /// Collects the total string to return, including input and output
     fn compile_return(&mut self) -> String {
-        if !self.compiled {
+        if !self.compiled && !self.ret.is_empty() {
             self.compiled = true;
             let mut ret = String::new();
             ret.push_str(&format!("{} executed ({})\n", self.start_marker,
