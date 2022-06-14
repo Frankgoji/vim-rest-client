@@ -25,6 +25,9 @@ const SSH_TO: &str = "sshTo";
 const SSH_CONFIG: &str = "sshConfig";
 const SSH_KEY: &str = "sshKey";
 
+// Regex for multipart form syntax
+const MULTIPART_FORM: &str = r"^#\s*@form\s*(.+=.+)";
+
 #[derive(Clone)]
 enum Method {
     Get,
@@ -64,6 +67,7 @@ struct Request {
     url: String,
     headers: Vec<String>,
     data: Option<String>,
+    multipart_forms: Vec<String>,
 }
 
 impl Request {
@@ -93,6 +97,16 @@ impl Request {
                     |replaced| handle_basic_auth(replaced, &basic_auth_re)
                 )
         }).collect::<Vec<String>>();
+        let multipart_forms = self.multipart_forms.iter().map(|form| {
+            parse_selectors(form, env)
+                .map_or_else(
+                    |e| {
+                        header_err = Some(e.to_string());
+                        String::from("ERR")
+                    },
+                    |replaced| replaced
+                )
+        }).collect::<Vec<String>>();
         if let Some(e) = &header_err {
             return Err(io_error(&e))?;
         }
@@ -112,6 +126,10 @@ impl Request {
         if let Some(d) = data {
             args.push(String::from("-d"));
             args.push(String::from(d));
+        }
+        for form in multipart_forms {
+            args.push(String::from("-F"));
+            args.push(String::from(form));
         }
         let ret = call_curl(&args, sessions, env)?;
 
@@ -231,14 +249,15 @@ struct FoldEnv {
     parent_fold: Option<Box<FoldEnv>>,  // if this FoldEnv is nested, contains the parent
 
     // request related vars
-    request_started: bool,      // if the fold has started defining a request
-    request_body_started: bool, // if the fold has started the request body
-    response_variable: String,  // variable to store the response
-    made_request: bool,         // if the request was made
-    method: Method,             // request method
-    url: String,                // request url
-    headers: Vec<String>,       // request headers
-    request_body: String,       // request body
+    request_started: bool,              // if the fold has started defining a request
+    request_body_started: bool,         // if the fold has started the request body
+    response_variable: String,          // variable to store the response
+    made_request: bool,                 // if the request was made
+    method: Method,                     // request method
+    url: String,                        // request url
+    headers: Vec<String>,               // request headers
+    multipart_forms: Vec<String>,       // forms and form data for multipart forms
+    request_body: String,               // request body
 }
 
 impl FoldEnv {
@@ -262,6 +281,7 @@ impl FoldEnv {
             method: Method::Get,
             url: String::new(),
             headers: Vec::new(),
+            multipart_forms: Vec::new(),
             request_body: String::new(),
         }
     }
@@ -328,10 +348,12 @@ impl FoldEnv {
             let method = self.method.clone();
             let url = self.url.clone();
             let headers = self.headers.clone();
+            let multipart_forms = self.multipart_forms.clone();
             let req = Request {
                 method,
                 url,
                 headers,
+                multipart_forms,
                 data: if self.request_body_started {
                     Some(self.request_body.clone())
                 } else {
@@ -404,6 +426,7 @@ pub fn parse_input
     let start_fold_re = Regex::new(r"^(###\{\s*(.*))$").unwrap();
     let executed_re = Regex::new(r" ?executed( \((ERROR|SUCCESS)\))?$").unwrap();
     let while_re = Regex::new(process_while::WHILE_START).unwrap();
+    let multi_form_re = Regex::new(MULTIPART_FORM).unwrap();
     let mut first_while = true;
     loop {
         let mut line = String::new();
@@ -529,6 +552,16 @@ pub fn parse_input
                 .and_then(|caps| caps.get(1))
                 .and_then(|var_name| {
                     fold_env.response_variable = String::from(var_name.as_str());
+                    Some(())
+                });
+            // check for # @form <form assign> which adds a multipart form arg
+            // <form assign> has the syntax
+            // - form_name=form_value
+            // - form_name=@file_path
+            multi_form_re.captures(&line)
+                .and_then(|caps| caps.get(1))
+                .and_then(|form| {
+                    fold_env.multipart_forms.push(String::from(form.as_str()));
                     Some(())
                 });
             // else skip comment
@@ -891,6 +924,7 @@ mod tests {
                 method: Method::Get,
                 url: String::from("https://reqbin.com/echo/get/xml"),
                 headers: vec![],
+                multipart_forms: vec![],
                 data: None,
             };
             let (resp, val) = req.make_request(&mut sessions, &mut env).unwrap();
@@ -904,6 +938,7 @@ mod tests {
                 method: Method::Get,
                 url: String::from("{{.baseUrl}}/{{.getXml}}"),
                 headers: vec![],
+                multipart_forms: vec![],
                 data: None,
             };
             let (resp, _) = req.make_request(&mut sessions, &mut env).unwrap();
@@ -916,6 +951,7 @@ mod tests {
                 method: Method::Post,
                 url: String::from("https://reqbin.com/echo/post/json"),
                 headers: vec![String::from("{{.ct}}: {{.json}}")],
+                multipart_forms: vec![],
                 data: Some(String::from("{\"test\": \"value\"}")),
             };
             let (resp, val) = req.make_request(&mut sessions, &mut env).unwrap();
@@ -930,6 +966,7 @@ mod tests {
                 method: Method::Post,
                 url: String::from("https://reqbin.com/echo/post/json"),
                 headers: vec![String::from("{{.dne}}: application/json")],
+                multipart_forms: vec![],
                 data: Some(String::from("{\"test\": \"value\"}")),
             };
             let resp = req.make_request(&mut sessions, &mut env);
@@ -948,6 +985,7 @@ mod tests {
                 method: Method::Get,
                 url: String::from("http://aunchoeu"),
                 headers: vec![],
+                multipart_forms: vec![],
                 data: None,
             };
             let resp = req.make_request(&mut sessions, &mut env);
