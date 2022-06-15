@@ -458,6 +458,56 @@ key must be a string at line 1 column 2
             result
         );
     }
+    {
+        let test_in = r#"###{
+# @debug
+@baseUrl = "https://reqbin.com"
+GET {{.baseUrl}}/echo/get/json
+###}"#;
+        let test_out = r#"###{ executed (SUCCESS)
+# @debug
+@baseUrl = "https://reqbin.com"
+GET {{.baseUrl}}/echo/get/json
+########## RESULT
+@baseUrl = "https://reqbin.com"
+curl -k --include https://reqbin.com/echo/get/json -X GET
+###}"#;
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        assert_eq!(
+            result,
+            String::from(test_out),
+            "Expected:\n{}\nGot:\n{}",
+            test_out,
+            result
+        );
+    }
+    {
+        let test_in = r#"###{
+# @verbose
+@baseUrl = "https://reqbin.com"
+GET {{.baseUrl}}/echo/get/json
+###}"#;
+        let test_out = r#"(?s)###\{ executed \(SUCCESS\)
+# @verbose
+@baseUrl = "https://reqbin.com"
+GET \{\{.baseUrl\}\}/echo/get/json
+########## RESULT
+.*
+> GET /echo/get/json .*
+.*
+< [^ ]* 200 OK
+.*
+< Content-Type: application/json
+.*
+###}"#;
+        let test_out_re = Regex::new(test_out).unwrap();
+        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        assert!(
+            test_out_re.is_match(&result),
+            "Result:\n{}",
+            result
+        );
+    }
 
     clear_env_file();
 }

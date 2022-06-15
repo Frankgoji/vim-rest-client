@@ -25,9 +25,6 @@ const SSH_TO: &str = "sshTo";
 const SSH_CONFIG: &str = "sshConfig";
 const SSH_KEY: &str = "sshKey";
 
-// Regex for multipart form syntax
-const MULTIPART_FORM: &str = r"^#\s*@form\s*(.+=.+)";
-
 #[derive(Clone)]
 enum Method {
     Get,
@@ -81,7 +78,9 @@ impl Request {
     (
         &self,
         sessions: &mut HashMap<String, Session>,
-        env: &mut Value
+        env: &mut Value,
+        is_debug: bool,
+        is_verbose: bool,
     ) -> Result<(String, Value), Box<dyn Error>> {
         let method = self.method.to_string();
         let url = parse_selectors(&self.url, env)?;
@@ -115,7 +114,7 @@ impl Request {
         } else {
             None
         };
-        let mut args = vec!["-k", "--include", &url, "-X", &method]
+        let mut args = vec!["-k", if is_verbose {"-v"} else {"--include"}, &url, "-X", &method]
             .iter()
             .map(|&s| String::from(s))
             .collect::<Vec<String>>();
@@ -131,7 +130,11 @@ impl Request {
             args.push(String::from("-F"));
             args.push(String::from(form));
         }
-        let ret = call_curl(&args, sessions, env)?;
+        if is_debug {
+            args.insert(0, String::from("curl"));
+            return Ok((args.join(" "), json!("")));
+        }
+        let (ret, e) = call_curl(&args, sessions, env)?;
 
         enum Response {
             NoSplit(String), // whole response
@@ -152,10 +155,15 @@ impl Request {
                 }
             }
         }
-        let mut ret_enum = ret.split_once("\n\n")
-            .map_or_else(
-                || Response::NoSplit(String::from(&ret)),
-                |(headers, resp)| Response::NonJson(String::from(headers), String::from(resp)));
+        // if verbose, return is from stdout, and the other output is stderr
+        let mut ret_enum = if is_verbose {
+            Response::NonJson(String::from(&e), String::from(ret))
+        } else {
+            ret.split_once("\n\n")
+                .map_or_else(
+                    || Response::NoSplit(String::from(&ret)),
+                    |(headers, resp)| Response::NonJson(String::from(headers), String::from(resp)))
+        };
         if let Response::NonJson(headers, resp) = ret_enum {
             ret_enum = serde_json::from_str::<Value>(&resp)
                 .map_or_else(
@@ -180,7 +188,7 @@ fn call_curl
     args: &Vec<String>,
     sessions: &mut HashMap<String, Session>,
     env: &mut Value
-) -> Result<String, Box<dyn Error>> {
+) -> Result<(String, String), Box<dyn Error>> {
     if let Some(_) = env.get(SSH_TO) {
         let rt = Runtime::new()?;
         return rt.block_on(ssh_curl(args, sessions, env));
@@ -188,13 +196,14 @@ fn call_curl
     let curl = Command::new("curl")
         .args(args)
         .output()?;
+    let e = String::from_utf8_lossy(&curl.stderr).to_string();
     if !curl.status.success() {
-        let e = String::from_utf8_lossy(&curl.stderr).to_string();
         return Err(io_error(&e))?;
     }
     let ret = String::from_utf8_lossy(&curl.stdout).to_string();
     let ret = ret.replace('\r', "");
-    Ok(ret)
+    let e = e.replace('\r', "");
+    Ok((ret, e))
 }
 
 async fn ssh_curl
@@ -202,7 +211,7 @@ async fn ssh_curl
     args: &Vec<String>,
     sessions: &mut HashMap<String, Session>,
     env: &mut Value
-) -> Result<String, Box<dyn Error>> {
+) -> Result<(String, String), Box<dyn Error>> {
     let dest = env.get(SSH_TO)
         .unwrap()
         .as_str()
@@ -225,14 +234,15 @@ async fn ssh_curl
         .args(args)
         .output()
         .await?;
+    let e = String::from_utf8_lossy(&curl.stderr).to_string();
     if !curl.status.success() {
-        let e = String::from_utf8_lossy(&curl.stderr).to_string();
         return Err(io_error(&e))?;
     }
     let ret = String::from_utf8_lossy(&curl.stdout).to_string();
     let ret = ret.replace('\r', "");
+    let e = e.replace('\r', "");
     sessions.insert(String::from(dest), session);
-    Ok(ret)
+    Ok((ret, e))
 }
 
 /// Variables related to executing the content of a single fold
@@ -258,6 +268,8 @@ struct FoldEnv {
     headers: Vec<String>,               // request headers
     multipart_forms: Vec<String>,       // forms and form data for multipart forms
     request_body: String,               // request body
+    is_debug: bool,                     // is debug flag set
+    is_verbose: bool,                   // is verbose flag set
 }
 
 impl FoldEnv {
@@ -283,6 +295,8 @@ impl FoldEnv {
             headers: Vec::new(),
             multipart_forms: Vec::new(),
             request_body: String::new(),
+            is_debug: false,
+            is_verbose: false,
         }
     }
 
@@ -361,7 +375,7 @@ impl FoldEnv {
                 },
             };
             self.made_request = true;
-            req.make_request(sessions, env)
+            req.make_request(sessions, env, self.is_debug, self.is_verbose)
                 .and_then(|(response, val)| {
                     if !self.response_variable.is_empty() {
                         let res = set_var(&self.response_variable, &val, env);
@@ -377,6 +391,35 @@ impl FoldEnv {
                     self.output.push_str(&format!("{}\n", err.to_string()));
                     Ok(())
                 }).unwrap();
+        }
+    }
+
+    /// Parses flags
+    fn parse_flags(&mut self, line: &String, flags: &Flags) {
+        // check for # @name <name> which will do a variable definition on the response
+        flags.response_var_re.captures(line)
+            .and_then(|caps| caps.get(1))
+            .and_then(|var_name| {
+                self.response_variable = String::from(var_name.as_str());
+                Some(())
+            });
+        // check for # @form <form assign> which adds a multipart form arg
+        // <form assign> has the syntax
+        // - form_name=form_value
+        // - form_name=@file_path
+        flags.multi_form_re.captures(line)
+            .and_then(|caps| caps.get(1))
+            .and_then(|form| {
+                self.multipart_forms.push(String::from(form.as_str()));
+                Some(())
+            });
+        // check for # @debug which will print the curl request rather than run it
+        if flags.debug_re.is_match(line) {
+            self.is_debug = true;
+        }
+        // check for # @verbose which will run curl with verbose flag
+        if flags.verbose_re.is_match(line) {
+            self.is_verbose = true;
         }
     }
 }
@@ -406,6 +449,26 @@ impl Drop for SshSessions {
     }
 }
 
+/// Flags that are indicated with a syntax like so:
+/// # @flag_name
+pub struct Flags {
+    response_var_re: Regex,
+    multi_form_re: Regex,
+    debug_re: Regex,
+    verbose_re: Regex,
+}
+
+impl Flags {
+    fn new() -> Flags {
+        Flags {
+            response_var_re: Regex::new(r"^#\s*@name\s*([^ ]+)").unwrap(),
+            multi_form_re: Regex::new(r"^#\s*@form\s*(.+=.+)").unwrap(),
+            debug_re: Regex::new(r"^#\s*@debug").unwrap(),
+            verbose_re: Regex::new(r"^#\s*@verbose").unwrap(),
+        }
+    }
+}
+
 /// Parse input lines that either define a variable or make a request
 /// Must return the input lines, as well as appropriate output
 /// Each block can have some variable definitions, but they must be before the
@@ -422,11 +485,10 @@ pub fn parse_input
     let mut ret = String::new();
     let mut fold_started = false;
 
-    let resp_var_re = Regex::new(r"^#\s*@name\s*([^ ]+)").unwrap();
     let start_fold_re = Regex::new(r"^(###\{\s*(.*))$").unwrap();
     let executed_re = Regex::new(r" ?executed( \((ERROR|SUCCESS)\))?$").unwrap();
     let while_re = Regex::new(process_while::WHILE_START).unwrap();
-    let multi_form_re = Regex::new(MULTIPART_FORM).unwrap();
+    let flags = Flags::new();
     let mut first_while = true;
     loop {
         let mut line = String::new();
@@ -547,24 +609,8 @@ pub fn parse_input
             insert_newline(&mut fold_env.output);
             fold_env.output.push_str(&res_line);
         } else if line.starts_with('#') {
-            // check for # @name <name> which will do a variable definition on the response
-            resp_var_re.captures(&line)
-                .and_then(|caps| caps.get(1))
-                .and_then(|var_name| {
-                    fold_env.response_variable = String::from(var_name.as_str());
-                    Some(())
-                });
-            // check for # @form <form assign> which adds a multipart form arg
-            // <form assign> has the syntax
-            // - form_name=form_value
-            // - form_name=@file_path
-            multi_form_re.captures(&line)
-                .and_then(|caps| caps.get(1))
-                .and_then(|form| {
-                    fold_env.multipart_forms.push(String::from(form.as_str()));
-                    Some(())
-                });
-            // else skip comment
+            // parse and check flags, else skip comment
+            fold_env.parse_flags(&line, &flags);
         } else if !fold_env.request_started && line.is_empty() {
             // line breaks should be ignored, but appear in output
             fold_env.output.push('\n');
@@ -927,7 +973,7 @@ mod tests {
                 multipart_forms: vec![],
                 data: None,
             };
-            let (resp, val) = req.make_request(&mut sessions, &mut env).unwrap();
+            let (resp, val) = req.make_request(&mut sessions, &mut env, false, false).unwrap();
             let expected = "<?xml version=\"1.0\" encoding=\"utf-8\"?><Response>  <ResponseCode>0</ResponseCode>  <ResponseMessage>Success</ResponseMessage></Response>";
             let resp = resp.lines().last().unwrap();
             assert_eq!(resp, expected, "Expected {}, got {}", expected, resp);
@@ -941,7 +987,7 @@ mod tests {
                 multipart_forms: vec![],
                 data: None,
             };
-            let (resp, _) = req.make_request(&mut sessions, &mut env).unwrap();
+            let (resp, _) = req.make_request(&mut sessions, &mut env, false, false).unwrap();
             let expected = "<?xml version=\"1.0\" encoding=\"utf-8\"?><Response>  <ResponseCode>0</ResponseCode>  <ResponseMessage>Success</ResponseMessage></Response>";
             let resp = resp.lines().last().unwrap();
             assert_eq!(resp, expected, "Expected {}, got {}", expected, resp);
@@ -954,7 +1000,7 @@ mod tests {
                 multipart_forms: vec![],
                 data: Some(String::from("{\"test\": \"value\"}")),
             };
-            let (resp, val) = req.make_request(&mut sessions, &mut env).unwrap();
+            let (resp, val) = req.make_request(&mut sessions, &mut env, false, false).unwrap();
             let expected = r#"{
   "success": "true"
 }"#;
@@ -969,7 +1015,7 @@ mod tests {
                 multipart_forms: vec![],
                 data: Some(String::from("{\"test\": \"value\"}")),
             };
-            let resp = req.make_request(&mut sessions, &mut env);
+            let resp = req.make_request(&mut sessions, &mut env, false, false);
             match resp {
                 Ok(ret) => panic!("Expected error, but got Ok with value {:?}", ret),
                 Err(e) => assert_eq!(
@@ -988,7 +1034,7 @@ mod tests {
                 multipart_forms: vec![],
                 data: None,
             };
-            let resp = req.make_request(&mut sessions, &mut env);
+            let resp = req.make_request(&mut sessions, &mut env, false, false);
             match resp {
                 Ok(ret) => panic!("Expected error, but got Ok with value {:?}", ret),
                 Err(e) => assert_eq!(
@@ -998,6 +1044,49 @@ mod tests {
                     e.to_string()
                 ),
             };
+        }
+        {
+            let req = Request {
+                method: Method::Post,
+                url: String::from("https://reqbin.com/echo/post/json"),
+                headers: vec![String::from("{{.ct}}: {{.json}}")],
+                multipart_forms: vec![],
+                data: Some(String::from("{\"test\": \"value\"}")),
+            };
+            let (resp, val) = req.make_request(&mut sessions, &mut env, true, false).unwrap();
+            let expected = "curl -k --include https://reqbin.com/echo/post/json -X POST -H Content-Type: application/json -d {\"test\": \"value\"}";
+            assert!(resp.contains(expected), "Expected {} in response, but response is {}", expected, resp);
+            assert!(val.as_str().unwrap().is_empty(), "Expected val to be empty, got {}", val);
+        }
+        {
+            let req = Request {
+                method: Method::Post,
+                url: String::from("https://reqbin.com/echo/post/json"),
+                headers: vec![String::from("{{.ct}}: {{.json}}")],
+                multipart_forms: vec![],
+                data: Some(String::from("{\"test\": \"value\"}")),
+            };
+            let (resp, val) = req.make_request(&mut sessions, &mut env, true, true).unwrap();
+            let expected = "curl -k -v https://reqbin.com/echo/post/json -X POST -H Content-Type: application/json -d {\"test\": \"value\"}";
+            assert!(resp.contains(expected), "Expected {} in response, but response is {}", expected, resp);
+            assert!(val.as_str().unwrap().is_empty(), "Expected val to be empty, got {}", val);
+        }
+        {
+            let req = Request {
+                method: Method::Post,
+                url: String::from("https://reqbin.com/echo/post/json"),
+                headers: vec![String::from("{{.ct}}: {{.json}}")],
+                multipart_forms: vec![],
+                data: Some(String::from("{\"test\": \"value\"}")),
+            };
+            let (resp, val) = req.make_request(&mut sessions, &mut env, false, true).unwrap();
+            let expected1 = "> POST /echo/post/json";
+            let expected2 = "< Content-Type: application/json";
+            let expected3 = Regex::new(r"(?m)^<.* 200 OK$").unwrap();
+            assert!(resp.contains(expected1), "Expected {} in response, but response is {}", expected1, resp);
+            assert!(resp.contains(expected2), "Expected {} in response, but response is {}", expected2, resp);
+            assert!(expected3.is_match(&resp), "Expected {} in response, but response is {}", "< HTTP/_ 200 OK", resp);
+            assert_eq!(val["success"], json!("true"), "Got incorrect value: {:?}", val);
         }
 
         clear_env_file();
