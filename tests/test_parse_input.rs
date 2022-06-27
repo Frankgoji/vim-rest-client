@@ -1,9 +1,7 @@
-use vim_rest_client::{parse_input, ENV_FILE, SshSessions};
+use vim_rest_client::{GlobalEnv, ENV_FILE};
 
 use std::fs;
 use regex::Regex;
-
-use serde_json::json;
 
 fn clear_env_file() {
     if let Err(_) = fs::remove_file(ENV_FILE) {
@@ -15,8 +13,7 @@ fn clear_env_file() {
 
 #[test]
 fn test_parse_input() {
-    let mut ssh_sessions = SshSessions::new();
-    let mut env = json!({});
+    let mut g_env = GlobalEnv::new();
     {
         let test_in = r#"###{
 @baseUrl = "https://10.0.0.20:5443/api/v1"
@@ -26,7 +23,7 @@ fn test_parse_input() {
 ########## RESULT
 @baseUrl = "https://10.0.0.20:5443/api/v1"
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -49,7 +46,7 @@ fn test_parse_input() {
 @urls = ["https://10.0.0.20:5443/api/v1", "https://reqbin.com"]
 @obj = {"a": "test", "b": "hello"}
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -73,7 +70,7 @@ fn test_parse_input() {
 @url1 = "https://10.0.0.20:5443/api/v1"
 @objA = "test"
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -96,7 +93,7 @@ fn test_parse_input() {
 @valid = "valid json"
 expected ident at line 1 column 2
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -113,7 +110,7 @@ GET https://reqbin.com/echo/get/json
 GET https://reqbin.com/echo/get/json
 ########## no selection RESULT
 "#;
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert!(
             result.contains(should_contain),
             "Expected output should contain:\n{}\nResponse:\n{}",
@@ -140,7 +137,7 @@ GET {{.baseUrl}}/echo/get/json
 ########## selection RESULT
 @baseUrl = "https://reqbin.com"
 "#;
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert!(
             result.contains(should_contain),
             "Expected output should contain:\n{}\nResponse:\n{}",
@@ -163,7 +160,7 @@ GET {{.baseUrl}}/echo/get/json
 ########## test response RESULT
 @test = "true"
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -194,7 +191,7 @@ Content-Type: application/json
 }
 ########## test post RESULT
 "#;
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert!(
             result.contains(should_contain),
             "Expected output should contain:\n{}\nResponse:\n{}",
@@ -217,7 +214,7 @@ Content-Type: application/json
 ########## test response RESULT
 @test = "true"
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -256,7 +253,7 @@ Content-Type: application/json
 ########## set url RESULT
 @test = "https://reqbin.com/hello"
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -289,7 +286,7 @@ GET \{\{.baseUrl\}\}/echo/get/json
 @res = "true"
 ###\}"#;
         let test_out_re = Regex::new(test_out).unwrap();
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert!(
             test_out_re.is_match(&result),
             "Result:\n{}",
@@ -325,7 +322,7 @@ GET \{\{.baseUrl\}\}/echo/get/json
 failed to get resource at .dne
 ###
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -361,7 +358,7 @@ failed to get resource at .dne
 failed to get resource at .dne
 ###
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -394,7 +391,7 @@ GET \{\{.baseUrl\}\}/echo/get/json
 ###
 ###\}"#;
         let test_out_re = Regex::new(test_out).unwrap();
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert!(
             test_out_re.is_match(&result),
             "Result:\n{}",
@@ -413,7 +410,7 @@ GET \{\{.baseUrl\}\}/echo/get/json
 @i = 0
 key must be a string at line 1 column 2
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -431,7 +428,7 @@ key must be a string at line 1 column 2
 ########## test ERROR
 key must be a string at line 1 column 2
 ###} end of test"#;
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -449,7 +446,7 @@ key must be a string at line 1 column 2
 ########## while {{.i < 5}} ERROR
 key must be a string at line 1 column 2
 ###} endwhile"#;
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -472,7 +469,7 @@ GET {{.baseUrl}}/echo/get/json
 @baseUrl = "https://reqbin.com"
 curl -k --include https://reqbin.com/echo/get/json -X GET
 ###}"#;
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert_eq!(
             result,
             String::from(test_out),
@@ -501,7 +498,7 @@ GET \{\{.baseUrl\}\}/echo/get/json
 .*
 ###}"#;
         let test_out_re = Regex::new(test_out).unwrap();
-        let result = parse_input(&mut test_in.as_bytes(), &mut ssh_sessions.sessions, &mut env, false);
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert!(
             test_out_re.is_match(&result),
             "Result:\n{}",

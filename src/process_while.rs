@@ -12,13 +12,10 @@
 ///
 /// Supports nested while loops.
 
-use std::collections::HashMap;
 use std::io::BufRead;
-use openssh::Session;
 use regex::Regex;
-use serde_json::{self, Value};
 
-use crate::{parse_input, parse_selectors};
+use crate::{GlobalEnv};
 
 pub const WHILE_START: &str = r"^###\{\s*while\s*(\{\{.*\}\})";
 const WHILE_END: &str = r"^###\}\s*endwhile";
@@ -48,8 +45,7 @@ impl While {
     pub fn parse_while(
         first_line: &String,
         input: &mut impl BufRead,
-        sessions: &mut HashMap<String, Session>,
-        env: &mut Value
+        g_env: &mut GlobalEnv,
     ) -> While {
         let mut w = While::new();
         let mut num_loops = 1;
@@ -96,16 +92,16 @@ impl While {
             }
         }
         w.block = String::from(w.block.trim_end());
-        w.run(sessions, env);
+        w.run(g_env);
         w
     }
 
     /// Run while loop: call parse_input on block while the condition is true
-    fn run(&mut self, sessions: &mut HashMap<String, Session>, env: &mut Value) {
+    fn run(&mut self, g_env: &mut GlobalEnv) {
         let error_re = Regex::new(ERROR).unwrap();
-        while self.check_condition(env) && !self.error {
+        while self.check_condition(g_env) && !self.error {
             // call parse_input with ignore_first_while true to avoid infinite loop
-            self.output = parse_input(&mut self.block.clone().as_bytes(), sessions, env, true);
+            self.output = g_env.parse_input(&mut self.block.clone().as_bytes(), true);
             let first_line = self.output.lines().next().unwrap_or("");
             self.error = self.error || error_re.is_match(first_line);
         }
@@ -157,8 +153,8 @@ impl While {
 
     /// Evaluates the condition for the while loop. The jq syntax should return
     /// either true or false.
-    fn check_condition(&mut self, env: &mut Value) -> bool {
-        parse_selectors(&self.condition, env)
+    fn check_condition(&mut self, g_env: &mut GlobalEnv) -> bool {
+        g_env.parse_selectors(&self.condition)
             .map_or_else(
                 |err| {
                     self.error = true;
@@ -211,7 +207,7 @@ mod tests {
     use super::*;
     use std::fs;
     use serde_json::json;
-    use crate::{ENV_FILE, SshSessions};
+    use crate::ENV_FILE;
 
     fn clear_env_file() {
         if let Err(_) = fs::remove_file(ENV_FILE) {
@@ -223,9 +219,9 @@ mod tests {
 
     #[test]
     fn test_while_run() {
-        let mut ssh_sessions = SshSessions::new();
+        let mut g_env = GlobalEnv::new();
         {
-            let mut env: Value = json!({
+            g_env.env = json!({
                 "i": 0
             });
             let mut test_while = While::new();
@@ -233,7 +229,7 @@ mod tests {
             test_while.block = String::from(r#"###{ while {{.i < 5}}
 @i = {{.i + 1}}
 ###} endwhile"#);
-            test_while.run(&mut ssh_sessions.sessions, &mut env);
+            test_while.run(&mut g_env);
             let expected = String::from(r#"###{ while {{.i < 5}} executed (SUCCESS)
 @i = {{.i + 1}}
 ########## while {{.i < 5}} RESULT
@@ -249,7 +245,7 @@ mod tests {
             assert!(!test_while.error);
         }
         {
-            let mut env: Value = json!({
+            g_env.env = json!({
                 "i": 5
             });
             let mut test_while = While::new();
@@ -257,7 +253,7 @@ mod tests {
             test_while.block = String::from(r#"###{ while {{.i < 5}}
 @i = {{.i + 1}}
 ###} endwhile"#);
-            test_while.run(&mut ssh_sessions.sessions, &mut env);
+            test_while.run(&mut g_env);
             let expected = String::from(r#"###{ while {{.i < 5}} executed (SUCCESS)
 @i = {{.i + 1}}
 ########## while {{.i < 5}} RESULT
@@ -272,13 +268,13 @@ mod tests {
             assert!(!test_while.error);
         }
         {
-            let mut env: Value = json!({});
+            g_env.env = json!({});
             let mut test_while = While::new();
             test_while.condition = String::from("{{.j}}");
             test_while.block = String::from(r#"###{ while {{.j}}
 @j = {{.j + 1}}
 ###} endwhile"#);
-            test_while.run(&mut ssh_sessions.sessions, &mut env);
+            test_while.run(&mut g_env);
             let expected = String::from(r#"###{ while {{.j}} executed (ERROR)
 @j = {{.j + 1}}
 ########## while {{.j}} ERROR
@@ -299,9 +295,9 @@ failed to get resource at .j
 
     #[test]
     fn test_compile_return() {
-        let mut ssh_sessions = SshSessions::new();
+        let mut g_env = GlobalEnv::new();
         {
-            let mut env: Value = json!({
+            g_env.env = json!({
                 "i": 0
             });
             let mut test_while = While::new();
@@ -309,7 +305,7 @@ failed to get resource at .j
             test_while.block = String::from(r#"###{ while {{.i < 5}}
 @i = {{.i + 1}}
 ###} endwhile 1"#);
-            test_while.run(&mut ssh_sessions.sessions, &mut env);
+            test_while.run(&mut g_env);
             let (res_input, res_output) = test_while.compile_return();
             let expected_input = String::from(r#"###{ while {{.i < 5}} executed (SUCCESS)
 @i = {{.i + 1}}
@@ -333,7 +329,7 @@ failed to get resource at .j
             );
         }
         {
-            let mut env: Value = json!({
+            g_env.env = json!({
                 "i": 5
             });
             let mut test_while = While::new();
@@ -341,7 +337,7 @@ failed to get resource at .j
             test_while.block = String::from(r#"###{ while {{.i < 5}}
 @i = {{.i + 1}}
 ###} endwhile"#);
-            test_while.run(&mut ssh_sessions.sessions, &mut env);
+            test_while.run(&mut g_env);
             let (res_input, res_output) = test_while.compile_return();
             let expected_input = String::from(r#"###{ while {{.i < 5}} executed (SUCCESS)
 @i = {{.i + 1}}
@@ -364,13 +360,13 @@ failed to get resource at .j
             );
         }
         {
-            let mut env: Value = json!({});
+            g_env.env = json!({});
             let mut test_while = While::new();
             test_while.condition = String::from("{{.j}}");
             test_while.block = String::from(r#"###{ while {{.j}}
 @j = {{.j + 1}}
 ###} endwhile"#);
-            test_while.run(&mut ssh_sessions.sessions, &mut env);
+            test_while.run(&mut g_env);
             let (res_input, res_output) = test_while.compile_return();
             let expected_input = String::from(r#"###{ while {{.j}} executed (ERROR)
 @j = {{.j + 1}}
@@ -399,9 +395,9 @@ failed to get resource at .j
 
     #[test]
     fn test_parse_while() {
-        let mut ssh_sessions = SshSessions::new();
+        let mut g_env = GlobalEnv::new();
         {
-            let mut env: Value = json!({
+            g_env.env = json!({
                 "i": 0
             });
             let first_line = String::from("###{ while {{.i < 5}}");
@@ -410,8 +406,7 @@ failed to get resource at .j
             let w = While::parse_while(
                 &first_line,
                 &mut input.as_bytes(),
-                &mut ssh_sessions.sessions,
-                &mut env
+                &mut g_env
             );
             let expected = String::from(r#"###{ while {{.i < 5}} executed (SUCCESS)
 @i = {{.i + 1}}
@@ -428,7 +423,7 @@ failed to get resource at .j
             assert!(!w.error);
         }
         {
-            let mut env: Value = json!({
+            g_env.env = json!({
                 "i": 5
             });
             let first_line = String::from("###{ while {{.i < 5}}");
@@ -437,8 +432,7 @@ failed to get resource at .j
             let w = While::parse_while(
                 &first_line,
                 &mut input.as_bytes(),
-                &mut ssh_sessions.sessions,
-                &mut env
+                &mut g_env
             );
             let expected = String::from(r#"###{ while {{.i < 5}} executed (SUCCESS)
 @i = {{.i + 1}}
@@ -454,15 +448,14 @@ failed to get resource at .j
             assert!(!w.error);
         }
         {
-            let mut env: Value = json!({});
+            g_env.env = json!({});
             let first_line = String::from("###{ while {{.j}}");
             let input = String::from(r#"@j = {{.j + 1}}
 ###} endwhile"#);
             let w = While::parse_while(
                 &first_line,
                 &mut input.as_bytes(),
-                &mut ssh_sessions.sessions,
-                &mut env
+                &mut g_env
             );
             let expected = String::from(r#"###{ while {{.j}} executed (ERROR)
 @j = {{.j + 1}}
@@ -479,7 +472,7 @@ failed to get resource at .j
             assert!(w.error);
         }
         {
-            let mut env: Value = json!({
+            g_env.env = json!({
                 "i": 0,
                 "n": 0
             });
@@ -494,8 +487,7 @@ failed to get resource at .j
             let w = While::parse_while(
                 &first_line,
                 &mut input.as_bytes(),
-                &mut ssh_sessions.sessions,
-                &mut env
+                &mut g_env
             );
             let expected = String::from(r#"###{ while {{.i < 5}} executed (SUCCESS)
 @j = 0
@@ -522,7 +514,7 @@ failed to get resource at .j
             assert!(!w.error);
         }
         {
-            let mut env: Value = json!({
+            g_env.env = json!({
                 "i": 0
             });
             let first_line = String::from("###{ while {{.i < 5}}");
@@ -531,8 +523,7 @@ failed to get resource at .j
             let w = While::parse_while(
                 &first_line,
                 &mut input.as_bytes(),
-                &mut ssh_sessions.sessions,
-                &mut env
+                &mut g_env
             );
             let expected = String::from(r#"###{ while {{.i < 5}} executed (ERROR)
 @i = {.i + 1}
