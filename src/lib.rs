@@ -433,11 +433,15 @@ impl GlobalEnv {
     pub fn new() -> GlobalEnv {
         GlobalEnv {
             sessions: SshSessions::new(),
-            env: fs::read_to_string(ENV_FILE)
-                .and_then(|env_string| serde_json::from_str(&env_string)
-                      .or_else(|e| Err(io_error(&e.to_string()))))
-                .map_or_else(|_| json!({}), |val| val)
+            env: GlobalEnv::read_env(),
         }
+    }
+
+    fn read_env() -> Value {
+        fs::read_to_string(ENV_FILE)
+            .and_then(|env_string| serde_json::from_str(&env_string)
+                  .or_else(|e| Err(io_error(&e.to_string()))))
+            .map_or_else(|_| json!({}), |val| val)
     }
 
     /// Parse input lines that either define a variable or make a request

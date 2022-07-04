@@ -21,8 +21,9 @@ function! RestClientFilter()
 endfunction
 
 " Function that deletes .env.json, assuming it exists in the current directory.
+let g:clearenv = 1
 function! ClearEnv()
-    if filereadable(".env.json")
+    if filereadable(".env.json") && g:clearenv
         call delete(".env.json")
         echom "Deleted .env.json"
     endif

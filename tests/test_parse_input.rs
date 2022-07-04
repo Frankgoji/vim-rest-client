@@ -5,9 +5,9 @@ use regex::Regex;
 
 fn clear_env_file() {
     if let Err(_) = fs::remove_file(ENV_FILE) {
-        println!("file doesn't exist")
+        println!("{} doesn't exist", ENV_FILE);
     } else {
-        println!("file deleted")
+        println!("{} deleted", ENV_FILE);
     }
 }
 
