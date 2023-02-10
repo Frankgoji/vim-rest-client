@@ -505,6 +505,33 @@ curl -k --include https://reqbin.com/echo/get/json -X GET
 //            result
 //        );
 //    }
+    {
+        let test_in = r#"###{
+# @debug
+# @options --test
+# @options --output test.txt
+@baseUrl = "https://reqbin.com"
+GET {{.baseUrl}}/echo/get/json
+###}"#;
+        let test_out = r#"###{ executed (SUCCESS)
+# @debug
+# @options --test
+# @options --output test.txt
+@baseUrl = "https://reqbin.com"
+GET {{.baseUrl}}/echo/get/json
+########## RESULT
+@baseUrl = "https://reqbin.com"
+curl -k --include https://reqbin.com/echo/get/json -X GET --test --output test.txt
+###}"#;
+        let result = g_env.parse_input(&mut test_in.as_bytes(), false);
+        assert_eq!(
+            result,
+            String::from(test_out),
+            "Expected:\n{}\nGot:\n{}",
+            test_out,
+            result
+        );
+    }
 
     clear_env_file();
 }

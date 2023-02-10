@@ -68,6 +68,7 @@ struct Request {
     headers: Vec<String>,
     data: Option<String>,
     multipart_forms: Vec<String>,
+    options: Vec<String>,
 }
 
 impl Request {
@@ -108,6 +109,16 @@ impl Request {
                     |replaced| replaced
                 )
         }).collect::<Vec<String>>();
+        let options = self.options.iter().map(|option| {
+            g_env.parse_selectors(option)
+                .map_or_else(
+                    |e| {
+                        header_err = Some(e.to_string());
+                        String::from("ERR")
+                    },
+                    |replaced| replaced
+                )
+        }).collect::<Vec<String>>();
         if let Some(e) = &header_err {
             return Err(io_error(&e))?;
         }
@@ -131,6 +142,9 @@ impl Request {
         for form in multipart_forms {
             args.push(String::from("-F"));
             args.push(String::from(form));
+        }
+        for option in options {
+            args.push(String::from(option));
         }
         if is_debug {
             args.insert(0, String::from("curl"));
@@ -211,6 +225,7 @@ struct FoldEnv {
     request_body: String,               // request body
     is_debug: bool,                     // is debug flag set
     is_verbose: bool,                   // is verbose flag set
+    options: Vec<String>,               // options for the curl command
 }
 
 impl FoldEnv {
@@ -238,6 +253,7 @@ impl FoldEnv {
             request_body: String::new(),
             is_debug: false,
             is_verbose: false,
+            options: Vec::new(),
         }
     }
 
@@ -304,6 +320,7 @@ impl FoldEnv {
             let url = self.url.clone();
             let headers = self.headers.clone();
             let multipart_forms = self.multipart_forms.clone();
+            let options = self.options.clone();
             let req = Request {
                 method,
                 url,
@@ -314,6 +331,7 @@ impl FoldEnv {
                 } else {
                     None
                 },
+                options,
             };
             self.made_request = true;
             req.make_request(g_env, self.is_debug, self.is_verbose)
@@ -362,6 +380,17 @@ impl FoldEnv {
         if flags.verbose_re.is_match(line) {
             self.is_verbose = true;
         }
+        // check for # @options <options>
+        // - these are any options that can be used for curl, like --output filename
+        // - for now, does not support args with spaces like --output "test file.txt"
+        flags.options_re.captures(line)
+            .and_then(|caps| caps.get(1))
+            .and_then(|options| {
+                for option in options.as_str().split(' ') {
+                    self.options.push(String::from(option));
+                }
+                Some(())
+            });
     }
 }
 
@@ -411,6 +440,7 @@ pub struct Flags {
     multi_form_re: Regex,
     debug_re: Regex,
     verbose_re: Regex,
+    options_re: Regex,
 }
 
 impl Flags {
@@ -420,6 +450,7 @@ impl Flags {
             multi_form_re: Regex::new(r"^#\s*@form\s*(.+=.+)").unwrap(),
             debug_re: Regex::new(r"^#\s*@debug").unwrap(),
             verbose_re: Regex::new(r"^#\s*@verbose").unwrap(),
+            options_re: Regex::new(r"^#\s*@options\s*(.*)").unwrap(),
         }
     }
 }
