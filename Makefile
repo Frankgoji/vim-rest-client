@@ -1,5 +1,8 @@
 test:
-	cargo test -- --test-threads=1
+	SHELL=/bin/bash cargo test -- --test-threads=1
+
+enter-build:
+	docker run --rm -it -v "$$(pwd):/home/rust/src" vim-rest-client-builder bash
 
 build:
 	docker run --rm -it -v "$$(pwd):/home/rust/src" vim-rest-client-builder \
