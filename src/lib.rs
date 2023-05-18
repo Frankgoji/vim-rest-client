@@ -148,7 +148,14 @@ impl Request {
         }
         if is_debug {
             args.insert(0, String::from("curl"));
-            return Ok((args.join(" "), json!("")));
+            let quoted = args.iter()
+                .map(|arg| match arg {
+                    arg if arg.contains(" ") && arg.contains("\"") => format!("'{}'", arg),
+                    arg if arg.contains(" ") => format!("\"{}\"", arg),
+                    arg => arg.clone(),
+                })
+            .collect::<Vec<String>>();
+            return Ok((quoted.join(" "), json!("")));
         }
         let (ret, e) = g_env.call_curl(&args)?;
 
