@@ -757,6 +757,9 @@ impl GlobalEnv {
     ) -> Result<Option<Value>, Box<dyn Error>> {
         let env_var_re = Regex::new(r"^\$(.*)$").unwrap();
         if let Some(caps) = env_var_re.captures(selector) {
+            if selector.contains('(') {
+                return self.command_substitution(selector);
+            }
             let var = caps.get(1).unwrap().as_str();
             if let Some(_) = self.env.get(SSH_TO) {
                 let rt = Runtime::new()?;
@@ -768,6 +771,30 @@ impl GlobalEnv {
         } else {
             Ok(None)
         }
+    }
+
+    /// Substitutes with the output of a command. Allows for executing things to
+    /// get the string, like $(lsb_release -a).
+    fn command_substitution
+    (
+        &mut self,
+        selector: &String,
+    ) -> Result<Option<Value>, Box<dyn Error>> {
+        if let Some(_) = self.env.get(SSH_TO) {
+            let rt = Runtime::new()?;
+            return rt.block_on(self.ssh_command_substitution(selector));
+        }
+        let echo = Command::new("bash")
+            .arg("-c")
+            .arg(format!("echo \"{}\"", selector))
+            .output()?;
+        let e = String::from_utf8_lossy(&echo.stderr).to_string();
+        if !echo.status.success() {
+            return Err(io_error(&e))?;
+        }
+        let ret = String::from_utf8_lossy(&echo.stdout).to_string();
+        let ret = ret.replace('\n', "");
+        Ok(Some(json!(ret)))
     }
 
     fn call_curl(&mut self, args: &Vec<String>) -> Result<(String, String), Box<dyn Error>> {
@@ -862,6 +889,44 @@ impl GlobalEnv {
         let ret = ret.replace('\n', "");
         self.sessions.insert(String::from(dest), session);
         Ok(json!(ret))
+    }
+
+    async fn ssh_command_substitution(&mut self, selector: &str) -> Result<Option<Value>, Box<dyn Error>> {
+        let dest = self.env.get(SSH_TO)
+            .unwrap()
+            .as_str()
+            .ok_or_else(|| io_error(&format!("{} was not a string", SSH_TO)))?;
+        let session = if let Some(sess_ref) = self.sessions.remove(dest) {
+            sess_ref
+        } else {
+            let mut session_builder = SessionBuilder::default();
+            if let Some(config) = self.env.get(SSH_CONFIG) {
+                let config = config.as_str().ok_or_else(|| io_error(&format!("{} was not a string", SSH_CONFIG)))?;
+                session_builder.config_file(config);
+            }
+            if let Some(key) = self.env.get(SSH_KEY) {
+                let key = key.as_str().ok_or_else(|| io_error(&format!("{} was not a string", SSH_KEY)))?;
+                session_builder.keyfile(key);
+            }
+            if let Some(port) = self.env.get(SSH_PORT) {
+                let port = port.as_u64().ok_or_else(|| io_error(&format!("{} was not a number", SSH_PORT)))? as u16;
+                session_builder.port(port);
+            }
+            session_builder.connect_mux(dest).await?
+        };
+        let echo = session.command("echo")
+            .raw_arg(selector)
+            .output()
+            .await?;
+        let e = String::from_utf8_lossy(&echo.stderr).to_string();
+        if !echo.status.success() {
+            return Err(io_error(&e))?;
+        }
+        let ret = String::from_utf8_lossy(&echo.stdout).to_string();
+        let ret = ret.replace('\r', "");
+        let ret = ret.replace('\n', "");
+        self.sessions.insert(String::from(dest), session);
+        Ok(Some(json!(ret)))
     }
 }
 
@@ -1009,6 +1074,10 @@ mod tests {
             assert_eq!(env_var, json!("/bin/bash"), "Expected \"/bin/bash\", but got {:?}", env_var);
             let dne_env_var = g_env.evaluate(&String::from("$DNE_VAR")).unwrap();
             assert_eq!(dne_env_var, json!(""), "Expected \"\", but got {:?}", dne_env_var);
+        }
+        {
+            let env_var = g_env.evaluate(&String::from("$(lsb_release -r | sed 's/^.*\\s\\+//')")).unwrap();
+            assert_eq!(env_var, json!("18.04"), "Expected \"18.04\", but got {:?}", env_var);
         }
     }
 
