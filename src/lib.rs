@@ -18,8 +18,6 @@ use tokio::runtime::Runtime;
 
 pub mod process_while;
 
-// TODO: perhaps configurable location by ENV variable
-// TODO: or maybe the env should be based on the file name, like .file.rest.json
 pub const ENV_FILE: &str = ".env.json";
 
 // SSH config vars

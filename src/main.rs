@@ -56,11 +56,30 @@
 ///     "success": "true"
 /// }
 /// ###}
+use std::env;
 use std::io;
 
 fn main() {
+    if let Some(_) = env::args().find(|arg| &arg == &"-h" || &arg == &"--help") {
+        usage();
+        return;
+    }
     let stdin = io::stdin();
     let mut handle = stdin.lock();
     let mut g_env = vim_rest_client::GlobalEnv::new();
     println!("{}", g_env.parse_input(&mut handle, false));
+}
+
+fn usage() {
+    println!("Usage of vim-rest-client:");
+    println!("STDIN | vim-rest-client [-h/--help]");
+    println!();
+    println!("\t--help/-h\t\tShow this usage message");
+    println!();
+    println!("Flags:");
+    println!("# @name <name>\t\t\tSaves output from the fold result into the environment under the given name.");
+    println!("# @form <name>=<val>\t\tAdds multi-form data to the request. Equivalent to -F for curl.");
+    println!("# @debug\t\t\tDoes not execute fold but prints the curl command that would have executed.");
+    println!("# @verbose\t\t\tEnables verbose logs.");
+    println!("# @options <flags>\t\tAdds arguments to the argument list for curl.");
 }
