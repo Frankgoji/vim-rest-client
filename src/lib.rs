@@ -125,10 +125,18 @@ impl Request {
         } else {
             None
         };
-        let mut args = vec!["-k", if is_verbose {"-v"} else {"--include"}, &url, "-X", &method]
-            .iter()
-            .map(|&s| String::from(s))
-            .collect::<Vec<String>>();
+        let is_verbose = is_verbose
+            || options.contains(&String::from("-v"))
+            || options.contains(&String::from("--verbose"));
+        let mut args = vec![String::from("-k")];
+        if is_verbose {
+            args.push(String::from("-v"));
+        } else if options.is_empty() {
+            args.push(String::from("--include"));
+        }
+        args.push(String::from(url));
+        args.push(String::from("-X"));
+        args.push(String::from(method));
         for header in headers {
             args.push(String::from("-H"));
             args.push(String::from(header));

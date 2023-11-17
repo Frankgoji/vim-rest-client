@@ -521,7 +521,7 @@ GET {{.baseUrl}}/echo/get/json
 GET {{.baseUrl}}/echo/get/json
 ########## RESULT
 @baseUrl = "https://reqbin.com"
-curl -k --include https://reqbin.com/echo/get/json -X GET --test --output test.txt
+curl -k https://reqbin.com/echo/get/json -X GET --test --output test.txt
 ###}"#;
         let result = g_env.parse_input(&mut test_in.as_bytes(), false);
         assert_eq!(
