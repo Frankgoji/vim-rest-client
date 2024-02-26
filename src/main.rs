@@ -64,17 +64,22 @@ fn main() {
         usage();
         return;
     }
+    // get filename from args (returns option)
+    let mut args = env::args();
+    let _binname = args.next();
+    let filename = args.next();
     let stdin = io::stdin();
     let mut handle = stdin.lock();
-    let mut g_env = vim_rest_client::GlobalEnv::new();
+    let mut g_env = vim_rest_client::GlobalEnv::new(filename);
     println!("{}", g_env.parse_input(&mut handle, false));
 }
 
 fn usage() {
     println!("Usage of vim-rest-client:");
-    println!("STDIN | vim-rest-client [-h/--help]");
+    println!("STDIN | vim-rest-client [-h/--help] [file]");
     println!();
     println!("\t--help/-h\t\tShow this usage message");
+    println!("\tfile\t\tThe name to use as the env file (default .env.json)");
     println!();
     println!("Flags:");
     println!("# @name <name>\t\t\tSaves output from the fold result into the environment under the given name.");

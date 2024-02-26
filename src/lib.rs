@@ -472,18 +472,22 @@ impl Flags {
 pub struct GlobalEnv {
     pub sessions: SshSessions,
     pub env: Value,
+    filename: Option<String>,
 }
 
 impl GlobalEnv {
-    pub fn new() -> GlobalEnv {
+    pub fn new(filename: Option<String>) -> GlobalEnv {
         GlobalEnv {
+            filename: filename.clone(),
             sessions: SshSessions::new(),
-            env: GlobalEnv::read_env(),
+            env: GlobalEnv::read_env(filename),
         }
     }
 
-    fn read_env() -> Value {
-        fs::read_to_string(ENV_FILE)
+    fn read_env(filename: Option<String>) -> Value {
+        let env_file = filename.as_ref()
+            .map_or_else(|| ENV_FILE, |f| f);
+        fs::read_to_string(env_file)
             .and_then(|env_string| serde_json::from_str(&env_string)
                   .or_else(|e| Err(io_error(&e.to_string()))))
             .map_or_else(|_| json!({}), |val| val)
@@ -695,7 +699,9 @@ impl GlobalEnv {
         self.env.as_object_mut()
             .ok_or(io_error("cannot modify environment"))?
             .insert(String::from(var), val.clone());
-        fs::write(ENV_FILE, serde_json::to_string_pretty(&self.env)?)?;
+        let env_file = self.filename.as_ref()
+            .map_or_else(|| ENV_FILE, |f| f);
+        fs::write(env_file, serde_json::to_string_pretty(&self.env)?)?;
         Ok(())
     }
 
