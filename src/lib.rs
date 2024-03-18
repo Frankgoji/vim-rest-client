@@ -60,6 +60,66 @@ impl fmt::Display for Method {
     }
 }
 
+enum Response {
+    NoSplit(String), // whole response
+    NonJson(String, String), // headers, response
+    Json(String, Value), // headers, JSON response
+}
+impl Response {
+    /// Handles cases of more than one \n\n
+    fn new(ret: String, e: String, is_verbose: bool) -> Response {
+        if is_verbose {
+            // if verbose, return is from stdout, and the other output is stderr
+            return Response::NonJson(String::from(&e), String::from(ret));
+        }
+        let mut headers = String::new();
+        let mut value = String::new();
+        let mut done_headers = false;
+        let num_chunks = ret.matches("\n\n").count() + 1;
+        for (i, chunk) in ret.split("\n\n").enumerate() {
+            if done_headers || i == num_chunks - 1 {
+                if !value.is_empty() {
+                    value.push_str("\n\n");
+                }
+                value.push_str(chunk);
+                continue;
+            }
+            let mut to_push = &mut headers;
+            if !chunk.starts_with("HTTP") {
+                done_headers = true;
+                to_push = &mut value;
+            }
+            if !to_push.is_empty() {
+                to_push.push_str("\n\n");
+            }
+            to_push.push_str(chunk);
+        }
+
+        if headers.is_empty() {
+            return Response::NoSplit(value);
+        }
+
+        serde_json::from_str::<Value>(&value)
+            .map_or_else(
+                |_| Response::NonJson(String::from(&headers), String::from(&value)),
+                |r_json| Response::Json(String::from(&headers), r_json)
+            )
+    }
+
+    fn get_return(self) -> (String, Value) {
+        match self {
+            Response::NoSplit(response) => (response, json!("")),
+            Response::NonJson(headers, resp) => (format!("{}\n\n{}", headers, resp), json!(resp)),
+            Response::Json(headers, val) => {
+                let print_json: String = serde_json::to_string_pretty(&val)
+                    .or::<String>(Ok(val.to_string()))
+                    .unwrap();
+                (format!("{}\n\n{}", headers, print_json), val)
+            },
+        }
+    }
+}
+
 struct Request {
     method: Method,
     url: String,
@@ -165,40 +225,7 @@ impl Request {
         }
         let (ret, e) = g_env.call_curl(&args)?;
 
-        enum Response {
-            NoSplit(String), // whole response
-            NonJson(String, String), // headers, response
-            Json(String, Value), // headers, JSON response
-        }
-        impl Response {
-            fn get_return(self) -> (String, Value) {
-                match self {
-                    Response::NoSplit(response) => (response, json!("")),
-                    Response::NonJson(headers, resp) => (format!("{}\n\n{}", headers, resp), json!(resp)),
-                    Response::Json(headers, val) => {
-                        let print_json: String = serde_json::to_string_pretty(&val)
-                            .or::<String>(Ok(val.to_string()))
-                            .unwrap();
-                        (format!("{}\n\n{}", headers, print_json), val)
-                    },
-                }
-            }
-        }
-        // if verbose, return is from stdout, and the other output is stderr
-        let mut ret_enum = if is_verbose {
-            Response::NonJson(String::from(&e), String::from(ret))
-        } else {
-            ret.split_once("\n\n")
-                .map_or_else(
-                    || Response::NoSplit(String::from(&ret)),
-                    |(headers, resp)| Response::NonJson(String::from(headers), String::from(resp)))
-        };
-        if let Response::NonJson(headers, resp) = ret_enum {
-            ret_enum = serde_json::from_str::<Value>(&resp)
-                .map_or_else(
-                    |_| Response::NonJson(String::from(&headers), String::from(&resp)),
-                    |r_json| Response::Json(String::from(&headers), r_json));
-        }
+        let ret_enum = Response::new(ret, e, is_verbose);
         Ok(ret_enum.get_return())
     }
 }
@@ -975,7 +1002,7 @@ mod tests {
     fn test_parse_selectors() {
         // create dummy env (json) and call evaluate to see if it returns the
         // right values
-        let mut g_env = GlobalEnv::new();
+        let mut g_env = GlobalEnv::new(None);
         g_env.env = json!({
             "arr": ["a", "b", "c"],
             "str": "value",
@@ -1021,7 +1048,7 @@ mod tests {
     fn test_evaluate() {
         // create dummy env (json) and call evaluate to see if it returns the
         // right values
-        let mut g_env = GlobalEnv::new();
+        let mut g_env = GlobalEnv::new(None);
         g_env.env = json!({
             "arr": ["a", "b", "c"],
             "str": "value",
@@ -1095,7 +1122,7 @@ mod tests {
 
     #[test]
     fn test_define_var() {
-        let mut g_env = GlobalEnv::new();
+        let mut g_env = GlobalEnv::new(None);
         g_env.env = json!({"init": "test"});
         fn verify_sub(var: &str, in_val: &str, sub_val: &str, g_env: &mut GlobalEnv) {
             let test_in = format!("@{} = {}", var, in_val);
@@ -1317,4 +1344,42 @@ mod tests {
 //
 //        clear_env_file();
 //    }
+
+    #[test]
+    fn test_response() {
+        {
+            let resp = Response::new(String::from("HTTP/1.1 100 Continue\n\nHTTP/1.1 200 OK\nContent-Type: application/json; charset=utf-8\n\n{\"test\": \"val\"}"), String::new(), false);
+            match resp {
+                Response::Json(h, v) => {
+                    println!("SUCCESS!\n\nHeaders:\n{h}\n\nValue:\n{:?}", v);
+                    assert!(true);
+                },
+                Response::NonJson(h, v) => {
+                    println!("FAILED\n\nHeaders:\n{h}\n\nValue:\n{v}");
+                    assert!(false, "Response was NonJson");
+                },
+                Response::NoSplit(v) => {
+                    println!("FAILED\n\nValue:\n{v}");
+                    assert!(false, "Response was NoSplit");
+                },
+            }
+        }
+        {
+            let resp = Response::new(String::from("Just some response w/ no headers"), String::new(), false);
+            match resp {
+                Response::Json(h, v) => {
+                    println!("FAILED\n\nHeaders:\n{h}\n\nValue:\n{:?}", v);
+                    assert!(false, "Response was Json");
+                },
+                Response::NonJson(h, v) => {
+                    println!("FAILED\n\nHeaders:\n{h}\n\nValue:\n{v}");
+                    assert!(false, "Response was NonJson");
+                },
+                Response::NoSplit(v) => {
+                    println!("SUCCESS!\n\nValue:\n{v}");
+                    assert!(true);
+                },
+            }
+        }
+    }
 }

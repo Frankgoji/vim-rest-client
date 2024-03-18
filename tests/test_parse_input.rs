@@ -13,7 +13,7 @@ fn clear_env_file() {
 
 #[test]
 fn test_parse_input() {
-    let mut g_env = GlobalEnv::new();
+    let mut g_env = GlobalEnv::new(None);
     {
         let test_in = r#"###{
 @baseUrl = "https://10.0.0.20:5443/api/v1"

@@ -219,7 +219,7 @@ mod tests {
 
     #[test]
     fn test_while_run() {
-        let mut g_env = GlobalEnv::new();
+        let mut g_env = GlobalEnv::new(None);
         {
             g_env.env = json!({
                 "i": 0
@@ -295,7 +295,7 @@ failed to get resource at .j
 
     #[test]
     fn test_compile_return() {
-        let mut g_env = GlobalEnv::new();
+        let mut g_env = GlobalEnv::new(None);
         {
             g_env.env = json!({
                 "i": 0
@@ -395,7 +395,7 @@ failed to get resource at .j
 
     #[test]
     fn test_parse_while() {
-        let mut g_env = GlobalEnv::new();
+        let mut g_env = GlobalEnv::new(None);
         {
             g_env.env = json!({
                 "i": 0
