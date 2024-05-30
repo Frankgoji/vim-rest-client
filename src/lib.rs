@@ -1116,7 +1116,7 @@ mod tests {
         }
         {
             let env_var = g_env.evaluate(&String::from("$(lsb_release -r | sed 's/^.*\\s\\+//')")).unwrap();
-            assert_eq!(env_var, json!("18.04"), "Expected \"18.04\", but got {:?}", env_var);
+            assert_eq!(env_var, json!("22.04"), "Expected \"22.04\", but got {:?}", env_var);
         }
     }
 
