@@ -12,8 +12,8 @@ use std::process::Command;
 use base64::encode;
 use jq_rs;
 use openssh::{Session, SessionBuilder};
-use regex::{Regex, Captures};
-use serde_json::{self, Value, json};
+use regex::{Captures, Regex};
+use serde_json::{self, json, Value};
 use tokio::runtime::Runtime;
 
 pub mod process_while;
@@ -32,7 +32,7 @@ enum Method {
     Post,
     Delete,
     Put,
-    Other(String)
+    Other(String),
 }
 
 impl Method {
@@ -61,9 +61,9 @@ impl fmt::Display for Method {
 }
 
 enum Response {
-    NoSplit(String), // whole response
+    NoSplit(String),         // whole response
     NonJson(String, String), // headers, response
-    Json(String, Value), // headers, JSON response
+    Json(String, Value),     // headers, JSON response
 }
 impl Response {
     /// Handles cases of more than one \n\n
@@ -99,11 +99,10 @@ impl Response {
             return Response::NoSplit(value);
         }
 
-        serde_json::from_str::<Value>(&value)
-            .map_or_else(
-                |_| Response::NonJson(String::from(&headers), String::from(&value)),
-                |r_json| Response::Json(String::from(&headers), r_json)
-            )
+        serde_json::from_str::<Value>(&value).map_or_else(
+            |_| Response::NonJson(String::from(&headers), String::from(&value)),
+            |r_json| Response::Json(String::from(&headers), r_json),
+        )
     }
 
     fn get_return(self) -> (String, Value) {
@@ -115,7 +114,7 @@ impl Response {
                     .or::<String>(Ok(val.to_string()))
                     .unwrap();
                 (format!("{}\n\n{}", headers, print_json), val)
-            },
+            }
         }
     }
 }
@@ -136,8 +135,7 @@ impl Request {
     /// Return the response headers and response body (pretty-printed, if JSON),
     /// or the error with error cause if curl failed.
     /// (String, Value) = (entire response string with headers, just response)
-    fn make_request
-    (
+    fn make_request(
         &self,
         g_env: &mut GlobalEnv,
         is_debug: bool,
@@ -147,36 +145,45 @@ impl Request {
         let url = g_env.parse_selectors(&self.url)?;
         let mut header_err: Option<String> = None;
         let basic_auth_re = Regex::new(r"^(Authorization:\s+Basic\s+)([^:]+:[^:]+)$").unwrap();
-        let headers = self.headers.iter().map(|header| {
-            g_env.parse_selectors(header)
-                .map_or_else(
+        let headers = self
+            .headers
+            .iter()
+            .map(|header| {
+                g_env.parse_selectors(header).map_or_else(
                     |e| {
                         header_err = Some(e.to_string());
                         String::from("ERR")
                     },
-                    |replaced| handle_basic_auth(replaced, &basic_auth_re)
+                    |replaced| handle_basic_auth(replaced, &basic_auth_re),
                 )
-        }).collect::<Vec<String>>();
-        let multipart_forms = self.multipart_forms.iter().map(|form| {
-            g_env.parse_selectors(form)
-                .map_or_else(
+            })
+            .collect::<Vec<String>>();
+        let multipart_forms = self
+            .multipart_forms
+            .iter()
+            .map(|form| {
+                g_env.parse_selectors(form).map_or_else(
                     |e| {
                         header_err = Some(e.to_string());
                         String::from("ERR")
                     },
-                    |replaced| replaced
+                    |replaced| replaced,
                 )
-        }).collect::<Vec<String>>();
-        let options = self.options.iter().map(|option| {
-            g_env.parse_selectors(option)
-                .map_or_else(
+            })
+            .collect::<Vec<String>>();
+        let options = self
+            .options
+            .iter()
+            .map(|option| {
+                g_env.parse_selectors(option).map_or_else(
                     |e| {
                         header_err = Some(e.to_string());
                         String::from("ERR")
                     },
-                    |replaced| replaced
+                    |replaced| replaced,
                 )
-        }).collect::<Vec<String>>();
+            })
+            .collect::<Vec<String>>();
         if let Some(e) = &header_err {
             return Err(io_error(&e))?;
         }
@@ -214,13 +221,14 @@ impl Request {
         }
         if is_debug {
             args.insert(0, String::from("curl"));
-            let quoted = args.iter()
+            let quoted = args
+                .iter()
                 .map(|arg| match arg {
                     arg if arg.contains(" ") && arg.contains("\"") => format!("'{}'", arg),
                     arg if arg.contains(" ") => format!("\"{}\"", arg),
                     arg => arg.clone(),
                 })
-            .collect::<Vec<String>>();
+                .collect::<Vec<String>>();
             return Ok((quoted.join(" "), json!("")));
         }
         let (ret, e) = g_env.call_curl(&args)?;
@@ -234,38 +242,39 @@ impl Request {
 /// the user:pass string to base64, as appropriate. Returns the original string
 /// if not.
 fn handle_basic_auth(header: String, basic_auth_re: &Regex) -> String {
-    basic_auth_re.replace(&header, |caps: &Captures| {
-        format!("{}{}", &caps[1], encode(&caps[2].as_bytes()))
-    }).to_string()
+    basic_auth_re
+        .replace(&header, |caps: &Captures| {
+            format!("{}{}", &caps[1], encode(&caps[2].as_bytes()))
+        })
+        .to_string()
 }
-
 
 /// Variables related to executing the content of a single fold
 struct FoldEnv {
-    ret: String,                        // returned input
-    output: String,                     // returned executed output
-    title: String,                      // title of fold
-    start_marker: String,               // start of fold, without "executed" text
-    end_marker: String,                 // end of fold, in case there is a comment added
-    error: bool,                        // if error occurred during execution
-    first_line: bool,                   // if the first line has occurred yet
-    old_output_started: bool,           // if the output from previous execution was reached
-    compiled: bool,                     // if this FoldEnv has compiled the return
-    parent_fold: Option<Box<FoldEnv>>,  // if this FoldEnv is nested, contains the parent
+    ret: String,                       // returned input
+    output: String,                    // returned executed output
+    title: String,                     // title of fold
+    start_marker: String,              // start of fold, without "executed" text
+    end_marker: String,                // end of fold, in case there is a comment added
+    error: bool,                       // if error occurred during execution
+    first_line: bool,                  // if the first line has occurred yet
+    old_output_started: bool,          // if the output from previous execution was reached
+    compiled: bool,                    // if this FoldEnv has compiled the return
+    parent_fold: Option<Box<FoldEnv>>, // if this FoldEnv is nested, contains the parent
 
     // request related vars
-    request_started: bool,              // if the fold has started defining a request
-    request_body_started: bool,         // if the fold has started the request body
-    response_variable: String,          // variable to store the response
-    made_request: bool,                 // if the request was made
-    method: Method,                     // request method
-    url: String,                        // request url
-    headers: Vec<String>,               // request headers
-    multipart_forms: Vec<String>,       // forms and form data for multipart forms
-    request_body: String,               // request body
-    is_debug: bool,                     // is debug flag set
-    is_verbose: bool,                   // is verbose flag set
-    options: Vec<String>,               // options for the curl command
+    request_started: bool,        // if the fold has started defining a request
+    request_body_started: bool,   // if the fold has started the request body
+    response_variable: String,    // variable to store the response
+    made_request: bool,           // if the request was made
+    method: Method,               // request method
+    url: String,                  // request url
+    headers: Vec<String>,         // request headers
+    multipart_forms: Vec<String>, // forms and form data for multipart forms
+    request_body: String,         // request body
+    is_debug: bool,               // is debug flag set
+    is_verbose: bool,             // is verbose flag set
+    options: Vec<String>,         // options for the curl command
 }
 
 impl FoldEnv {
@@ -302,13 +311,18 @@ impl FoldEnv {
         if !self.compiled && !self.ret.is_empty() {
             self.compiled = true;
             let mut ret = String::new();
-            ret.push_str(&format!("{} executed ({})\n", self.start_marker,
-                if self.error {"ERROR"} else {"SUCCESS"}));
+            ret.push_str(&format!(
+                "{} executed ({})\n",
+                self.start_marker,
+                if self.error { "ERROR" } else { "SUCCESS" }
+            ));
             ret.push_str(&self.ret);
             insert_newline(&mut ret);
-            ret.push_str(&format!("########## {}{}\n",
+            ret.push_str(&format!(
+                "########## {}{}\n",
                 self.title,
-                if self.error {"ERROR"} else {"RESULT"}));
+                if self.error { "ERROR" } else { "RESULT" }
+            ));
             insert_newline(&mut self.output);
             if self.end_marker.is_empty() {
                 self.output.push_str("###}");
@@ -328,8 +342,11 @@ impl FoldEnv {
             self.compiled = true;
             let mut ret = String::new();
             let mut out = String::new();
-            ret.push_str(&format!("{} executed ({})\n", self.start_marker,
-                if self.error {"ERROR"} else {"SUCCESS"}));
+            ret.push_str(&format!(
+                "{} executed ({})\n",
+                self.start_marker,
+                if self.error { "ERROR" } else { "SUCCESS" }
+            ));
             ret.push_str(&self.ret);
             if self.end_marker.is_empty() {
                 ret.push_str("###}");
@@ -341,9 +358,11 @@ impl FoldEnv {
             if !parent_out.is_empty() && parent_out.chars().last().unwrap() != '\n' {
                 out.push('\n');
             }
-            out.push_str(&format!("### {}{}\n",
+            out.push_str(&format!(
+                "### {}{}\n",
                 self.title,
-                if self.error {"ERROR"} else {"RESULT"}));
+                if self.error { "ERROR" } else { "RESULT" }
+            ));
             insert_newline(&mut self.output);
             out.push_str(&self.output);
             out.push_str("###\n");
@@ -385,18 +404,21 @@ impl FoldEnv {
                     self.output.push_str(&response);
                     Ok(())
                 })
-                .or_else(|err| -> Result<(), ()>{
+                .or_else(|err| -> Result<(), ()> {
                     self.error = true;
                     self.output.push_str(&format!("{}\n", err.to_string()));
                     Ok(())
-                }).unwrap();
+                })
+                .unwrap();
         }
     }
 
     /// Parses flags
     fn parse_flags(&mut self, line: &String, flags: &Flags) {
         // check for # @name <name> which will do a variable definition on the response
-        flags.response_var_re.captures(line)
+        flags
+            .response_var_re
+            .captures(line)
             .and_then(|caps| caps.get(1))
             .and_then(|var_name| {
                 self.response_variable = String::from(var_name.as_str());
@@ -406,7 +428,9 @@ impl FoldEnv {
         // <form assign> has the syntax
         // - form_name=form_value
         // - form_name=@file_path
-        flags.multi_form_re.captures(line)
+        flags
+            .multi_form_re
+            .captures(line)
             .and_then(|caps| caps.get(1))
             .and_then(|form| {
                 self.multipart_forms.push(String::from(form.as_str()));
@@ -423,7 +447,9 @@ impl FoldEnv {
         // check for # @options <options>
         // - these are any options that can be used for curl, like --output filename
         // - for now, does not support args with spaces like --output "test file.txt"
-        flags.options_re.captures(line)
+        flags
+            .options_re
+            .captures(line)
             .and_then(|caps| caps.get(1))
             .and_then(|options| {
                 for option in options.as_str().split(' ') {
@@ -512,11 +538,11 @@ impl GlobalEnv {
     }
 
     fn read_env(filename: Option<String>) -> Value {
-        let env_file = filename.as_ref()
-            .map_or_else(|| ENV_FILE, |f| f);
+        let env_file = filename.as_ref().map_or_else(|| ENV_FILE, |f| f);
         fs::read_to_string(env_file)
-            .and_then(|env_string| serde_json::from_str(&env_string)
-                  .or_else(|e| Err(io_error(&e.to_string()))))
+            .and_then(|env_string| {
+                serde_json::from_str(&env_string).or_else(|e| Err(io_error(&e.to_string())))
+            })
             .map_or_else(|_| json!({}), |val| val)
     }
 
@@ -525,12 +551,7 @@ impl GlobalEnv {
     /// Each block can have some variable definitions, but they must be before the
     /// request. The request starts with the method, and it is assumed the rest of
     /// the lines of the block are the headers of the request.
-    pub fn parse_input
-    (
-        &mut self,
-        input: &mut impl BufRead,
-        ignore_first_while: bool,
-    ) -> String {
+    pub fn parse_input(&mut self, input: &mut impl BufRead, ignore_first_while: bool) -> String {
         let mut fold_env = FoldEnv::new();
         let mut ret = String::new();
         let mut fold_started = false;
@@ -547,12 +568,12 @@ impl GlobalEnv {
             match res {
                 Ok(0) => {
                     break;
-                },
+                }
                 Ok(_) => (),
                 Err(e) => {
                     fold_env.error = true;
                     fold_env.output.push_str(&e.to_string());
-                },
+                }
             };
             let start_while = while_re.is_match(&line);
             if start_while && !(ignore_first_while && first_while) {
@@ -625,8 +646,18 @@ impl GlobalEnv {
                 }
                 if fold_env.parent_fold.is_some() {
                     let (nest_ret, nest_out) = &fold_env.compile_for_parent();
-                    fold_env.parent_fold.as_mut().unwrap().ret.push_str(&nest_ret);
-                    fold_env.parent_fold.as_mut().unwrap().output.push_str(&nest_out);
+                    fold_env
+                        .parent_fold
+                        .as_mut()
+                        .unwrap()
+                        .ret
+                        .push_str(&nest_ret);
+                    fold_env
+                        .parent_fold
+                        .as_mut()
+                        .unwrap()
+                        .output
+                        .push_str(&nest_out);
                     let mut parent_err = fold_env.parent_fold.as_mut().unwrap().error;
                     parent_err = fold_env.error || parent_err;
                     fold_env = *fold_env.parent_fold.take().unwrap();
@@ -648,14 +679,13 @@ impl GlobalEnv {
             }
             if line.starts_with('@') {
                 // for each line that starts with @, call define_var
-                let res_line = self.define_var(&String::from(line))
-                    .map_or_else(
-                        |err| {
-                            fold_env.error = true;
-                            format!("{}\n", err.to_string())
-                        },
-                        |res| format!("{}\n", res)
-                    );
+                let res_line = self.define_var(&String::from(line)).map_or_else(
+                    |err| {
+                        fold_env.error = true;
+                        format!("{}\n", err.to_string())
+                    },
+                    |res| format!("{}\n", res),
+                );
                 insert_newline(&mut fold_env.output);
                 fold_env.output.push_str(&res_line);
             } else if line.starts_with('#') {
@@ -667,21 +697,22 @@ impl GlobalEnv {
                 continue;
             } else if !fold_env.request_started {
                 // parse method and URL
-                line.split_once(' ')
-                    .map_or_else(
-                        || {
-                            fold_env.error = true;
-                            insert_newline(&mut fold_env.output);
-                            fold_env.output.push_str(&format!("Could not parse line: {}\n", line));
-                            ()
-                        },
-                        |(m, url_str)| {
-                            fold_env.made_request = false;
-                            fold_env.method = Method::get_match(m);
-                            fold_env.url = String::from(url_str);
-                            ()
-                        }
-                    );
+                line.split_once(' ').map_or_else(
+                    || {
+                        fold_env.error = true;
+                        insert_newline(&mut fold_env.output);
+                        fold_env
+                            .output
+                            .push_str(&format!("Could not parse line: {}\n", line));
+                        ()
+                    },
+                    |(m, url_str)| {
+                        fold_env.made_request = false;
+                        fold_env.method = Method::get_match(m);
+                        fold_env.url = String::from(url_str);
+                        ()
+                    },
+                );
                 fold_env.request_started = true;
             } else if !fold_env.request_body_started && !line.is_empty() {
                 fold_env.headers.push(String::from(line));
@@ -710,24 +741,40 @@ impl GlobalEnv {
     /// If successful, return the line with the value stored, with substitutions.
     fn define_var(&mut self, var_line: &String) -> Result<String, Box<dyn Error>> {
         let re = Regex::new(r"@([^ ]+)\s*=\s*(.+)").unwrap();
-        let caps = re.captures(var_line)
+        let caps = re
+            .captures(var_line)
             .ok_or(io_error(&format!("cannot parse line: {}", var_line)))?;
         let var_name = caps.get(1).ok_or(io_error("unable to get variable"))?;
         let value = caps.get(2).ok_or(io_error("unable to get value"))?;
 
         let value = self.parse_selectors(&String::from(value.as_str()))?;
-        let value_json = serde_json::from_str(&value)?;
-        self.set_var(&String::from(var_name.as_str()), &value_json)?;
+        if value == "null" {
+            self.unset_var(&String::from(var_name.as_str()))?;
+        } else {
+            let value_json = serde_json::from_str(&value)?;
+            self.set_var(&String::from(var_name.as_str()), &value_json)?;
+        }
         Ok(format!("@{} = {}", var_name.as_str(), value))
     }
 
     /// Given a variable and value, add it to the env and set file.
     fn set_var(&mut self, var: &String, val: &Value) -> Result<(), Box<dyn Error>> {
-        self.env.as_object_mut()
+        self.env
+            .as_object_mut()
             .ok_or(io_error("cannot modify environment"))?
             .insert(String::from(var), val.clone());
-        let env_file = self.filename.as_ref()
-            .map_or_else(|| ENV_FILE, |f| f);
+        let env_file = self.filename.as_ref().map_or_else(|| ENV_FILE, |f| f);
+        fs::write(env_file, serde_json::to_string_pretty(&self.env)?)?;
+        Ok(())
+    }
+
+    /// Given a variable, remove it from the env and save the file.
+    fn unset_var(&mut self, var: &String) -> Result<(), Box<dyn Error>> {
+        self.env
+            .as_object_mut()
+            .ok_or(io_error("cannot modify environment"))?
+            .remove(var);
+        let env_file = self.filename.as_ref().map_or_else(|| ENV_FILE, |f| f);
         fs::write(env_file, serde_json::to_string_pretty(&self.env)?)?;
         Ok(())
     }
@@ -751,11 +798,9 @@ impl GlobalEnv {
                 return String::from("ERR");
             }
             let selector_val = selector_val.unwrap();
-            selector_val.as_str()
-                .map_or_else(
-                    || selector_val.to_string(),
-                    |s| String::from(s)
-                )
+            selector_val
+                .as_str()
+                .map_or_else(|| selector_val.to_string(), |s| String::from(s))
         });
         if let Some(err) = replace_err {
             return Err(io_error(&err))?;
@@ -781,7 +826,7 @@ impl GlobalEnv {
         let res_val = serde_json::from_str(&res_str)?;
         match res_val {
             Value::Null => Err(io_error(&format!("failed to get resource at {}", selector)))?,
-            _ => Ok(res_val)
+            _ => Ok(res_val),
         }
     }
 
@@ -789,11 +834,7 @@ impl GlobalEnv {
     /// like $VAR. If not, return None, otherwise return the value of the env var if
     /// it exists, or an empty string. If sshTo is defined, then retrieve the
     /// environment variable on the desired machine.
-    fn get_env_var
-    (
-        &mut self,
-        selector: &String,
-    ) -> Result<Option<Value>, Box<dyn Error>> {
+    fn get_env_var(&mut self, selector: &String) -> Result<Option<Value>, Box<dyn Error>> {
         let env_var_re = Regex::new(r"^\$(.*)$").unwrap();
         if let Some(caps) = env_var_re.captures(selector) {
             if selector.contains('(') {
@@ -805,8 +846,7 @@ impl GlobalEnv {
                 let val = rt.block_on(self.ssh_get_env_var(&String::from(selector)))?;
                 return Ok(Some(val));
             }
-            Ok(env::var(var)
-                .map_or_else(|_| Some(json!("")), |val| Some(json!(val))))
+            Ok(env::var(var).map_or_else(|_| Some(json!("")), |val| Some(json!(val))))
         } else {
             Ok(None)
         }
@@ -814,11 +854,7 @@ impl GlobalEnv {
 
     /// Substitutes with the output of a command. Allows for executing things to
     /// get the string, like $(lsb_release -a).
-    fn command_substitution
-    (
-        &mut self,
-        selector: &String,
-    ) -> Result<Option<Value>, Box<dyn Error>> {
+    fn command_substitution(&mut self, selector: &String) -> Result<Option<Value>, Box<dyn Error>> {
         if let Some(_) = self.env.get(SSH_TO) {
             let rt = Runtime::new()?;
             return rt.block_on(self.ssh_command_substitution(selector));
@@ -841,9 +877,7 @@ impl GlobalEnv {
             let rt = Runtime::new()?;
             return rt.block_on(self.ssh_curl(args));
         }
-        let curl = Command::new("curl")
-            .args(args)
-            .output()?;
+        let curl = Command::new("curl").args(args).output()?;
         let e = String::from_utf8_lossy(&curl.stderr).to_string();
         if !curl.status.success() {
             return Err(io_error(&e))?;
@@ -855,7 +889,9 @@ impl GlobalEnv {
     }
 
     async fn ssh_curl(&mut self, args: &Vec<String>) -> Result<(String, String), Box<dyn Error>> {
-        let dest = self.env.get(SSH_TO)
+        let dest = self
+            .env
+            .get(SSH_TO)
             .unwrap()
             .as_str()
             .ok_or_else(|| io_error(&format!("{} was not a string", SSH_TO)))?;
@@ -864,23 +900,27 @@ impl GlobalEnv {
         } else {
             let mut session_builder = SessionBuilder::default();
             if let Some(config) = self.env.get(SSH_CONFIG) {
-                let config = config.as_str().ok_or_else(|| io_error(&format!("{} was not a string", SSH_CONFIG)))?;
+                let config = config
+                    .as_str()
+                    .ok_or_else(|| io_error(&format!("{} was not a string", SSH_CONFIG)))?;
                 session_builder.config_file(config);
             }
             if let Some(key) = self.env.get(SSH_KEY) {
-                let key = key.as_str().ok_or_else(|| io_error(&format!("{} was not a string", SSH_KEY)))?;
+                let key = key
+                    .as_str()
+                    .ok_or_else(|| io_error(&format!("{} was not a string", SSH_KEY)))?;
                 session_builder.keyfile(key);
             }
             if let Some(port) = self.env.get(SSH_PORT) {
-                let port = port.as_u64().ok_or_else(|| io_error(&format!("{} was not a number", SSH_PORT)))? as u16;
+                let port = port
+                    .as_u64()
+                    .ok_or_else(|| io_error(&format!("{} was not a number", SSH_PORT)))?
+                    as u16;
                 session_builder.port(port);
             }
             session_builder.connect_mux(dest).await?
         };
-        let curl = session.command("curl")
-            .args(args)
-            .output()
-            .await?;
+        let curl = session.command("curl").args(args).output().await?;
         let e = String::from_utf8_lossy(&curl.stderr).to_string();
         if !curl.status.success() {
             return Err(io_error(&e))?;
@@ -893,7 +933,9 @@ impl GlobalEnv {
     }
 
     async fn ssh_get_env_var(&mut self, var: &String) -> Result<Value, Box<dyn Error>> {
-        let dest = self.env.get(SSH_TO)
+        let dest = self
+            .env
+            .get(SSH_TO)
             .unwrap()
             .as_str()
             .ok_or_else(|| io_error(&format!("{} was not a string", SSH_TO)))?;
@@ -902,23 +944,27 @@ impl GlobalEnv {
         } else {
             let mut session_builder = SessionBuilder::default();
             if let Some(config) = self.env.get(SSH_CONFIG) {
-                let config = config.as_str().ok_or_else(|| io_error(&format!("{} was not a string", SSH_CONFIG)))?;
+                let config = config
+                    .as_str()
+                    .ok_or_else(|| io_error(&format!("{} was not a string", SSH_CONFIG)))?;
                 session_builder.config_file(config);
             }
             if let Some(key) = self.env.get(SSH_KEY) {
-                let key = key.as_str().ok_or_else(|| io_error(&format!("{} was not a string", SSH_KEY)))?;
+                let key = key
+                    .as_str()
+                    .ok_or_else(|| io_error(&format!("{} was not a string", SSH_KEY)))?;
                 session_builder.keyfile(key);
             }
             if let Some(port) = self.env.get(SSH_PORT) {
-                let port = port.as_u64().ok_or_else(|| io_error(&format!("{} was not a number", SSH_PORT)))? as u16;
+                let port = port
+                    .as_u64()
+                    .ok_or_else(|| io_error(&format!("{} was not a number", SSH_PORT)))?
+                    as u16;
                 session_builder.port(port);
             }
             session_builder.connect_mux(dest).await?
         };
-        let echo = session.command("echo")
-            .raw_arg(var)
-            .output()
-            .await?;
+        let echo = session.command("echo").raw_arg(var).output().await?;
         let e = String::from_utf8_lossy(&echo.stderr).to_string();
         if !echo.status.success() {
             return Err(io_error(&e))?;
@@ -930,8 +976,13 @@ impl GlobalEnv {
         Ok(json!(ret))
     }
 
-    async fn ssh_command_substitution(&mut self, selector: &str) -> Result<Option<Value>, Box<dyn Error>> {
-        let dest = self.env.get(SSH_TO)
+    async fn ssh_command_substitution(
+        &mut self,
+        selector: &str,
+    ) -> Result<Option<Value>, Box<dyn Error>> {
+        let dest = self
+            .env
+            .get(SSH_TO)
             .unwrap()
             .as_str()
             .ok_or_else(|| io_error(&format!("{} was not a string", SSH_TO)))?;
@@ -940,23 +991,27 @@ impl GlobalEnv {
         } else {
             let mut session_builder = SessionBuilder::default();
             if let Some(config) = self.env.get(SSH_CONFIG) {
-                let config = config.as_str().ok_or_else(|| io_error(&format!("{} was not a string", SSH_CONFIG)))?;
+                let config = config
+                    .as_str()
+                    .ok_or_else(|| io_error(&format!("{} was not a string", SSH_CONFIG)))?;
                 session_builder.config_file(config);
             }
             if let Some(key) = self.env.get(SSH_KEY) {
-                let key = key.as_str().ok_or_else(|| io_error(&format!("{} was not a string", SSH_KEY)))?;
+                let key = key
+                    .as_str()
+                    .ok_or_else(|| io_error(&format!("{} was not a string", SSH_KEY)))?;
                 session_builder.keyfile(key);
             }
             if let Some(port) = self.env.get(SSH_PORT) {
-                let port = port.as_u64().ok_or_else(|| io_error(&format!("{} was not a number", SSH_PORT)))? as u16;
+                let port = port
+                    .as_u64()
+                    .ok_or_else(|| io_error(&format!("{} was not a number", SSH_PORT)))?
+                    as u16;
                 session_builder.port(port);
             }
             session_builder.connect_mux(dest).await?
         };
-        let echo = session.command("echo")
-            .raw_arg(selector)
-            .output()
-            .await?;
+        let echo = session.command("echo").raw_arg(selector).output().await?;
         let e = String::from_utf8_lossy(&echo.stderr).to_string();
         if !echo.status.success() {
             return Err(io_error(&e))?;
@@ -969,7 +1024,6 @@ impl GlobalEnv {
     }
 }
 
-
 /// Returns an error
 pub fn io_error(err: &str) -> io::Error {
     io::Error::new(io::ErrorKind::Other, err)
@@ -981,7 +1035,6 @@ fn insert_newline(s: &mut String) {
         s.push('\n');
     }
 }
-
 
 ///////////////////////////////////////////////
 /// Unit tests
@@ -1058,7 +1111,12 @@ mod tests {
         });
         {
             let arr = g_env.evaluate(&String::from(".arr")).unwrap();
-            assert_eq!(arr, json!(["a", "b", "c"]), "Expected [\"a\", \"b\", \"c\"], but got {:?}", arr);
+            assert_eq!(
+                arr,
+                json!(["a", "b", "c"]),
+                "Expected [\"a\", \"b\", \"c\"], but got {:?}",
+                arr
+            );
             let arr0 = g_env.evaluate(&String::from(".arr[0]")).unwrap();
             assert_eq!(arr0, json!("a"), "Expected \"a\", but got {:?}", arr0);
             let arr_err = g_env.evaluate(&String::from(".arr[3]"));
@@ -1074,7 +1132,12 @@ mod tests {
         }
         {
             let strng = g_env.evaluate(&String::from(".str")).unwrap();
-            assert_eq!(strng, json!("value"), "Expected \"value\", but got {:?}", strng);
+            assert_eq!(
+                strng,
+                json!("value"),
+                "Expected \"value\", but got {:?}",
+                strng
+            );
             let num = g_env.evaluate(&String::from(".num")).unwrap();
             assert_eq!(num, json!(1), "Expected 1, but got {:?}", num);
             let boolean = g_env.evaluate(&String::from(".bool")).unwrap();
@@ -1082,7 +1145,12 @@ mod tests {
         }
         {
             let obj = g_env.evaluate(&String::from(".obj")).unwrap();
-            assert_eq!(obj, json!({"a": 1, "b": 2}), "Expected {{\"a\": 1, \"b\", 2}}, but got {:?}", obj);
+            assert_eq!(
+                obj,
+                json!({"a": 1, "b": 2}),
+                "Expected {{\"a\": 1, \"b\", 2}}, but got {:?}",
+                obj
+            );
             let obj_a = g_env.evaluate(&String::from(".obj.a")).unwrap();
             assert_eq!(obj_a, json!(1), "Expected 1, but got {:?}", obj_a);
             let obj_err = g_env.evaluate(&String::from(".obj.c"));
@@ -1110,13 +1178,30 @@ mod tests {
         }
         {
             let env_var = g_env.evaluate(&String::from("$SHELL")).unwrap();
-            assert_eq!(env_var, json!("/bin/bash"), "Expected \"/bin/bash\", but got {:?}", env_var);
+            assert_eq!(
+                env_var,
+                json!("/bin/bash"),
+                "Expected \"/bin/bash\", but got {:?}",
+                env_var
+            );
             let dne_env_var = g_env.evaluate(&String::from("$DNE_VAR")).unwrap();
-            assert_eq!(dne_env_var, json!(""), "Expected \"\", but got {:?}", dne_env_var);
+            assert_eq!(
+                dne_env_var,
+                json!(""),
+                "Expected \"\", but got {:?}",
+                dne_env_var
+            );
         }
         {
-            let env_var = g_env.evaluate(&String::from("$(lsb_release -r | sed 's/^.*\\s\\+//')")).unwrap();
-            assert_eq!(env_var, json!("22.04"), "Expected \"22.04\", but got {:?}", env_var);
+            let env_var = g_env
+                .evaluate(&String::from("$(lsb_release -r | sed 's/^.*\\s\\+//')"))
+                .unwrap();
+            assert_eq!(
+                env_var,
+                json!("22.04"),
+                "Expected \"22.04\", but got {:?}",
+                env_var
+            );
         }
     }
 
@@ -1129,7 +1214,11 @@ mod tests {
             let test_out = format!("@{} = {}", var, sub_val);
             println!("in: {}", test_in);
             let out = g_env.define_var(&test_in).unwrap();
-            assert_eq!(out, test_out, "Expected \"{}\", but got \"{}\"", test_out, out);
+            assert_eq!(
+                out, test_out,
+                "Expected \"{}\", but got \"{}\"",
+                test_out, out
+            );
             let check = g_env.evaluate(&format!(".{}", var)).unwrap();
             let expect: Value = serde_json::from_str(sub_val).unwrap();
             assert_eq!(check, expect, "Expected {:?}, got {:?}", expect, check);
@@ -1138,7 +1227,11 @@ mod tests {
             let test_in = format!("@{} = {}", var, val);
             println!("in: {}", test_in);
             let out = g_env.define_var(&test_in).unwrap();
-            assert_eq!(out, test_in, "Expected \"{}\", but got \"{}\"", test_in, out);
+            assert_eq!(
+                out, test_in,
+                "Expected \"{}\", but got \"{}\"",
+                test_in, out
+            );
             let check = g_env.evaluate(&format!(".{}", var)).unwrap();
             let expect: Value = serde_json::from_str(val).unwrap();
             assert_eq!(check, expect, "Expected {:?}, got {:?}", expect, check);
@@ -1148,7 +1241,11 @@ mod tests {
             verify_non_sub("baseUrl", "\"https://10.0.0.20:5443/api/v1\"", &mut g_env);
         }
         {
-            verify_non_sub("urls", "[\"https://10.0.0.20:5443/api/v1\", \"https://reqbin.com\"]", &mut g_env);
+            verify_non_sub(
+                "urls",
+                "[\"https://10.0.0.20:5443/api/v1\", \"https://reqbin.com\"]",
+                &mut g_env,
+            );
             verify_non_sub("obj", "{\"a\": \"test\", \"b\": \"hello\"}", &mut g_env);
             verify_non_sub("int1", "50", &mut g_env);
         }
@@ -1188,10 +1285,25 @@ mod tests {
             };
         }
         {
-            verify_sub("testUrl", "\"{{.baseUrl}}/test\"", "\"https://10.0.0.20:5443/api/v1/test\"", &mut g_env);
-            verify_sub("url1", "\"{{.urls[0]}}\"", "\"https://10.0.0.20:5443/api/v1\"", &mut g_env);
+            verify_sub(
+                "testUrl",
+                "\"{{.baseUrl}}/test\"",
+                "\"https://10.0.0.20:5443/api/v1/test\"",
+                &mut g_env,
+            );
+            verify_sub(
+                "url1",
+                "\"{{.urls[0]}}\"",
+                "\"https://10.0.0.20:5443/api/v1\"",
+                &mut g_env,
+            );
             verify_sub("objA", "\"{{.obj.a}}\"", "\"test\"", &mut g_env);
-            verify_sub("objB", "\"{{.baseUrl}}/{{.obj.b}}\"", "\"https://10.0.0.20:5443/api/v1/hello\"", &mut g_env);
+            verify_sub(
+                "objB",
+                "\"{{.baseUrl}}/{{.obj.b}}\"",
+                "\"https://10.0.0.20:5443/api/v1/hello\"",
+                &mut g_env,
+            );
         }
         {
             let test_fail_sub = r#"@fail = "{{.dne}}""#;
@@ -1209,141 +1321,141 @@ mod tests {
         clear_env_file();
     }
 
-//    #[test]
-//    fn test_make_request() {
-//        let mut g_env = GlobalEnv::new();
-//        g_env.env = json!({
-//            "baseUrl": "https://reqbin.com",
-//            "getXml": "echo/get/xml",
-//            "ct": "Content-Type",
-//            "json": "application/json"
-//        });
-//        {
-//            let req = Request {
-//                method: Method::Get,
-//                url: String::from("https://reqbin.com/echo/get/xml"),
-//                headers: vec![],
-//                multipart_forms: vec![],
-//                data: None,
-//            };
-//            let (resp, val) = req.make_request(&mut g_env, false, false).unwrap();
-//            let expected = "<?xml version=\"1.0\" encoding=\"utf-8\"?><Response>  <ResponseCode>0</ResponseCode>  <ResponseMessage>Success</ResponseMessage></Response>";
-//            let resp = resp.lines().last().unwrap();
-//            assert_eq!(resp, expected, "Expected {}, got {}", expected, resp);
-//            assert!(val.is_string(), "Response is XML so value should be string, got {:?}", val);
-//        }
-//        {
-//            let req = Request {
-//                method: Method::Get,
-//                url: String::from("{{.baseUrl}}/{{.getXml}}"),
-//                headers: vec![],
-//                multipart_forms: vec![],
-//                data: None,
-//            };
-//            let (resp, _) = req.make_request(&mut g_env, false, false).unwrap();
-//            let expected = "<?xml version=\"1.0\" encoding=\"utf-8\"?><Response>  <ResponseCode>0</ResponseCode>  <ResponseMessage>Success</ResponseMessage></Response>";
-//            let resp = resp.lines().last().unwrap();
-//            assert_eq!(resp, expected, "Expected {}, got {}", expected, resp);
-//        }
-//        {
-//            let req = Request {
-//                method: Method::Post,
-//                url: String::from("https://reqbin.com/echo/post/json"),
-//                headers: vec![String::from("{{.ct}}: {{.json}}")],
-//                multipart_forms: vec![],
-//                data: Some(String::from("{\"test\": \"value\"}")),
-//            };
-//            let (resp, val) = req.make_request(&mut g_env, false, false).unwrap();
-//            let expected = r#"{
-//  "success": "true"
-//}"#;
-//            assert!(resp.contains(expected), "Expected {} in response, but response is {}", expected, resp);
-//            assert_eq!(val["success"], json!("true"), "Got incorrect value: {:?}", val);
-//        }
-//        {
-//            let req = Request {
-//                method: Method::Post,
-//                url: String::from("https://reqbin.com/echo/post/json"),
-//                headers: vec![String::from("{{.dne}}: application/json")],
-//                multipart_forms: vec![],
-//                data: Some(String::from("{\"test\": \"value\"}")),
-//            };
-//            let resp = req.make_request(&mut g_env, false, false);
-//            match resp {
-//                Ok(ret) => panic!("Expected error, but got Ok with value {:?}", ret),
-//                Err(e) => assert_eq!(
-//                    e.to_string(),
-//                    "failed to get resource at .dne",
-//                    "Got an incorrect error: \"{}\"",
-//                    e.to_string()
-//                ),
-//            };
-//        }
-//        {
-//            let req = Request {
-//                method: Method::Get,
-//                url: String::from("http://aunchoeu"),
-//                headers: vec![],
-//                multipart_forms: vec![],
-//                data: None,
-//            };
-//            let resp = req.make_request(&mut g_env, false, false);
-//            match resp {
-//                Ok(ret) => panic!("Expected error, but got Ok with value {:?}", ret),
-//                Err(e) => assert_eq!(
-//                    e.to_string(),
-//                    "curl: (6) Couldn't resolve host 'aunchoeu'\n",
-//                    "Got an incorrect error: \"{}\"",
-//                    e.to_string()
-//                ),
-//            };
-//        }
-//        {
-//            let req = Request {
-//                method: Method::Post,
-//                url: String::from("https://reqbin.com/echo/post/json"),
-//                headers: vec![String::from("{{.ct}}: {{.json}}")],
-//                multipart_forms: vec![],
-//                data: Some(String::from("{\"test\": \"value\"}")),
-//            };
-//            let (resp, val) = req.make_request(&mut g_env, true, false).unwrap();
-//            let expected = "curl -k --include https://reqbin.com/echo/post/json -X POST -H Content-Type: application/json -d {\"test\": \"value\"}";
-//            assert!(resp.contains(expected), "Expected {} in response, but response is {}", expected, resp);
-//            assert!(val.as_str().unwrap().is_empty(), "Expected val to be empty, got {}", val);
-//        }
-//        {
-//            let req = Request {
-//                method: Method::Post,
-//                url: String::from("https://reqbin.com/echo/post/json"),
-//                headers: vec![String::from("{{.ct}}: {{.json}}")],
-//                multipart_forms: vec![],
-//                data: Some(String::from("{\"test\": \"value\"}")),
-//            };
-//            let (resp, val) = req.make_request(&mut g_env, true, true).unwrap();
-//            let expected = "curl -k -v https://reqbin.com/echo/post/json -X POST -H Content-Type: application/json -d {\"test\": \"value\"}";
-//            assert!(resp.contains(expected), "Expected {} in response, but response is {}", expected, resp);
-//            assert!(val.as_str().unwrap().is_empty(), "Expected val to be empty, got {}", val);
-//        }
-//        {
-//            let req = Request {
-//                method: Method::Post,
-//                url: String::from("https://reqbin.com/echo/post/json"),
-//                headers: vec![String::from("{{.ct}}: {{.json}}")],
-//                multipart_forms: vec![],
-//                data: Some(String::from("{\"test\": \"value\"}")),
-//            };
-//            let (resp, val) = req.make_request(&mut g_env, false, true).unwrap();
-//            let expected1 = "> POST /echo/post/json";
-//            let expected2 = "< Content-Type: application/json";
-//            let expected3 = Regex::new(r"(?m)^<.* 200 OK$").unwrap();
-//            assert!(resp.contains(expected1), "Expected {} in response, but response is {}", expected1, resp);
-//            assert!(resp.contains(expected2), "Expected {} in response, but response is {}", expected2, resp);
-//            assert!(expected3.is_match(&resp), "Expected {} in response, but response is {}", "< HTTP/_ 200 OK", resp);
-//            assert_eq!(val["success"], json!("true"), "Got incorrect value: {:?}", val);
-//        }
-//
-//        clear_env_file();
-//    }
+    //    #[test]
+    //    fn test_make_request() {
+    //        let mut g_env = GlobalEnv::new();
+    //        g_env.env = json!({
+    //            "baseUrl": "https://reqbin.com",
+    //            "getXml": "echo/get/xml",
+    //            "ct": "Content-Type",
+    //            "json": "application/json"
+    //        });
+    //        {
+    //            let req = Request {
+    //                method: Method::Get,
+    //                url: String::from("https://reqbin.com/echo/get/xml"),
+    //                headers: vec![],
+    //                multipart_forms: vec![],
+    //                data: None,
+    //            };
+    //            let (resp, val) = req.make_request(&mut g_env, false, false).unwrap();
+    //            let expected = "<?xml version=\"1.0\" encoding=\"utf-8\"?><Response>  <ResponseCode>0</ResponseCode>  <ResponseMessage>Success</ResponseMessage></Response>";
+    //            let resp = resp.lines().last().unwrap();
+    //            assert_eq!(resp, expected, "Expected {}, got {}", expected, resp);
+    //            assert!(val.is_string(), "Response is XML so value should be string, got {:?}", val);
+    //        }
+    //        {
+    //            let req = Request {
+    //                method: Method::Get,
+    //                url: String::from("{{.baseUrl}}/{{.getXml}}"),
+    //                headers: vec![],
+    //                multipart_forms: vec![],
+    //                data: None,
+    //            };
+    //            let (resp, _) = req.make_request(&mut g_env, false, false).unwrap();
+    //            let expected = "<?xml version=\"1.0\" encoding=\"utf-8\"?><Response>  <ResponseCode>0</ResponseCode>  <ResponseMessage>Success</ResponseMessage></Response>";
+    //            let resp = resp.lines().last().unwrap();
+    //            assert_eq!(resp, expected, "Expected {}, got {}", expected, resp);
+    //        }
+    //        {
+    //            let req = Request {
+    //                method: Method::Post,
+    //                url: String::from("https://reqbin.com/echo/post/json"),
+    //                headers: vec![String::from("{{.ct}}: {{.json}}")],
+    //                multipart_forms: vec![],
+    //                data: Some(String::from("{\"test\": \"value\"}")),
+    //            };
+    //            let (resp, val) = req.make_request(&mut g_env, false, false).unwrap();
+    //            let expected = r#"{
+    //  "success": "true"
+    //}"#;
+    //            assert!(resp.contains(expected), "Expected {} in response, but response is {}", expected, resp);
+    //            assert_eq!(val["success"], json!("true"), "Got incorrect value: {:?}", val);
+    //        }
+    //        {
+    //            let req = Request {
+    //                method: Method::Post,
+    //                url: String::from("https://reqbin.com/echo/post/json"),
+    //                headers: vec![String::from("{{.dne}}: application/json")],
+    //                multipart_forms: vec![],
+    //                data: Some(String::from("{\"test\": \"value\"}")),
+    //            };
+    //            let resp = req.make_request(&mut g_env, false, false);
+    //            match resp {
+    //                Ok(ret) => panic!("Expected error, but got Ok with value {:?}", ret),
+    //                Err(e) => assert_eq!(
+    //                    e.to_string(),
+    //                    "failed to get resource at .dne",
+    //                    "Got an incorrect error: \"{}\"",
+    //                    e.to_string()
+    //                ),
+    //            };
+    //        }
+    //        {
+    //            let req = Request {
+    //                method: Method::Get,
+    //                url: String::from("http://aunchoeu"),
+    //                headers: vec![],
+    //                multipart_forms: vec![],
+    //                data: None,
+    //            };
+    //            let resp = req.make_request(&mut g_env, false, false);
+    //            match resp {
+    //                Ok(ret) => panic!("Expected error, but got Ok with value {:?}", ret),
+    //                Err(e) => assert_eq!(
+    //                    e.to_string(),
+    //                    "curl: (6) Couldn't resolve host 'aunchoeu'\n",
+    //                    "Got an incorrect error: \"{}\"",
+    //                    e.to_string()
+    //                ),
+    //            };
+    //        }
+    //        {
+    //            let req = Request {
+    //                method: Method::Post,
+    //                url: String::from("https://reqbin.com/echo/post/json"),
+    //                headers: vec![String::from("{{.ct}}: {{.json}}")],
+    //                multipart_forms: vec![],
+    //                data: Some(String::from("{\"test\": \"value\"}")),
+    //            };
+    //            let (resp, val) = req.make_request(&mut g_env, true, false).unwrap();
+    //            let expected = "curl -k --include https://reqbin.com/echo/post/json -X POST -H Content-Type: application/json -d {\"test\": \"value\"}";
+    //            assert!(resp.contains(expected), "Expected {} in response, but response is {}", expected, resp);
+    //            assert!(val.as_str().unwrap().is_empty(), "Expected val to be empty, got {}", val);
+    //        }
+    //        {
+    //            let req = Request {
+    //                method: Method::Post,
+    //                url: String::from("https://reqbin.com/echo/post/json"),
+    //                headers: vec![String::from("{{.ct}}: {{.json}}")],
+    //                multipart_forms: vec![],
+    //                data: Some(String::from("{\"test\": \"value\"}")),
+    //            };
+    //            let (resp, val) = req.make_request(&mut g_env, true, true).unwrap();
+    //            let expected = "curl -k -v https://reqbin.com/echo/post/json -X POST -H Content-Type: application/json -d {\"test\": \"value\"}";
+    //            assert!(resp.contains(expected), "Expected {} in response, but response is {}", expected, resp);
+    //            assert!(val.as_str().unwrap().is_empty(), "Expected val to be empty, got {}", val);
+    //        }
+    //        {
+    //            let req = Request {
+    //                method: Method::Post,
+    //                url: String::from("https://reqbin.com/echo/post/json"),
+    //                headers: vec![String::from("{{.ct}}: {{.json}}")],
+    //                multipart_forms: vec![],
+    //                data: Some(String::from("{\"test\": \"value\"}")),
+    //            };
+    //            let (resp, val) = req.make_request(&mut g_env, false, true).unwrap();
+    //            let expected1 = "> POST /echo/post/json";
+    //            let expected2 = "< Content-Type: application/json";
+    //            let expected3 = Regex::new(r"(?m)^<.* 200 OK$").unwrap();
+    //            assert!(resp.contains(expected1), "Expected {} in response, but response is {}", expected1, resp);
+    //            assert!(resp.contains(expected2), "Expected {} in response, but response is {}", expected2, resp);
+    //            assert!(expected3.is_match(&resp), "Expected {} in response, but response is {}", "< HTTP/_ 200 OK", resp);
+    //            assert_eq!(val["success"], json!("true"), "Got incorrect value: {:?}", val);
+    //        }
+    //
+    //        clear_env_file();
+    //    }
 
     #[test]
     fn test_response() {
@@ -1353,32 +1465,36 @@ mod tests {
                 Response::Json(h, v) => {
                     println!("SUCCESS!\n\nHeaders:\n{h}\n\nValue:\n{:?}", v);
                     assert!(true);
-                },
+                }
                 Response::NonJson(h, v) => {
                     println!("FAILED\n\nHeaders:\n{h}\n\nValue:\n{v}");
                     assert!(false, "Response was NonJson");
-                },
+                }
                 Response::NoSplit(v) => {
                     println!("FAILED\n\nValue:\n{v}");
                     assert!(false, "Response was NoSplit");
-                },
+                }
             }
         }
         {
-            let resp = Response::new(String::from("Just some response w/ no headers"), String::new(), false);
+            let resp = Response::new(
+                String::from("Just some response w/ no headers"),
+                String::new(),
+                false,
+            );
             match resp {
                 Response::Json(h, v) => {
                     println!("FAILED\n\nHeaders:\n{h}\n\nValue:\n{:?}", v);
                     assert!(false, "Response was Json");
-                },
+                }
                 Response::NonJson(h, v) => {
                     println!("FAILED\n\nHeaders:\n{h}\n\nValue:\n{v}");
                     assert!(false, "Response was NonJson");
-                },
+                }
                 Response::NoSplit(v) => {
                     println!("SUCCESS!\n\nValue:\n{v}");
                     assert!(true);
-                },
+                }
             }
         }
     }

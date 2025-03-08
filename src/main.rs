@@ -83,8 +83,18 @@ fn usage() {
     println!();
     println!("Flags:");
     println!("# @name <name>\t\t\tSaves output from the fold result into the environment under the given name.");
-    println!("# @form <name>=<val>\t\tAdds multi-form data to the request. Equivalent to -F for curl.");
-    println!("# @debug\t\t\tDoes not execute fold but prints the curl command that would have executed.");
+    println!(
+        "# @form <name>=<val>\t\tAdds multi-form data to the request. Equivalent to -F for curl."
+    );
+    println!(
+        "# @debug\t\t\tDoes not execute fold but prints the curl command that would have executed."
+    );
     println!("# @verbose\t\t\tEnables verbose logs.");
     println!("# @options <flags>\t\tAdds arguments to the argument list for curl.");
+    println!();
+    println!("Special Variables:");
+    println!("sshTo\t\tHost to ssh to and run curl command from");
+    println!("sshConfig\tSSH config file path");
+    println!("sshKey\t\tSSH key file path");
+    println!("sshPort\t\tPort of ssh host");
 }
