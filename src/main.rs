@@ -79,7 +79,7 @@ fn usage() {
     println!("STDIN | vim-rest-client [-h/--help] [file]");
     println!();
     println!("\t--help/-h\t\tShow this usage message");
-    println!("\tfile\t\tThe name to use as the env file (default .env.json)");
+    println!("\tfile\t\t\tThe name to use as the env file (default .env.json)");
     println!();
     println!("Flags:");
     println!("# @name <name>\t\t\tSaves output from the fold result into the environment under the given name.");
